@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydacc"
+version = "0.1.0"
+description = "DACC methodology for Python: gate, append-only journal, introspection, access layer"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+[project.scripts]
+pydacc = "pydacc.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pydacc*"]

@@ -8,6 +8,7 @@ slice); this one answers agent queries fast.
 from __future__ import annotations
 
 import ast
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,14 +42,26 @@ def _target(stmt: ast.stmt) -> str | None:
     return None
 
 
+def _parse_source(source: str) -> ast.AST | None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        try:
+            return ast.parse(source)
+        except SyntaxError:
+            return None
+
+
 def scan(root: Path) -> list[Model]:
     models: list[Model] = []
     for path in sorted(root.rglob("*.py")):
         if "__pycache__" in path.parts or ".venv" in path.parts:
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError, OSError):
+            source = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        tree = _parse_source(source)
+        if tree is None:
             continue
         module = path.parent.name
         for node in ast.walk(tree):

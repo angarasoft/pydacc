@@ -39,8 +39,15 @@ class EmitTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         _sample(root)
         docs = emit_docs(root)
-        self.assertIn("hrm.employee", docs["AGENTS.md"])
+        self.assertIn("# Agent rules", docs["AGENTS.md"])
         self.assertIn("@AGENTS.md", docs["QWEN.md"])
+
+    def test_emit_includes_authored_rules(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "docs" / "agents").mkdir(parents=True)
+        (root / "docs" / "agents" / "rules.md").write_text("# My rules\n")
+        docs = emit_docs(root)
+        self.assertIn("# My rules", docs["AGENTS.md"])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import subprocess
 
 from . import __version__
 from .access import emit_docs, map_, refs_, where_
+from .config import load_checks
 from .gate import Check, run
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
@@ -45,7 +46,10 @@ def _cmd_map(fmt: str) -> int:
     return 0
 
 
-def _default_checks() -> list[Check]:
+def _checks() -> list[Check]:
+    configured = load_checks(_root())
+    if configured is not None:
+        return configured
     return [
         Check("tests", ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
         Check("cargo-test", ["cargo", "test", "--manifest-path", "crates/pydacc-gate/Cargo.toml", "--quiet"]),
@@ -54,7 +58,7 @@ def _default_checks() -> list[Check]:
 
 
 def _cmd_gate() -> int:
-    verdict = run(_root(), _default_checks())
+    verdict = run(_root(), _checks())
     print(f"passed={verdict.passed_count} total={verdict.total}")
     if verdict.failed:
         print("failed: " + ", ".join(verdict.failed), file=sys.stderr)
@@ -70,7 +74,7 @@ def _cmd_commit(journal: str, work: str, message: str) -> int:
     if not staged:
         print("commit: nothing staged — stage your work first (git add)", file=sys.stderr)
         return 2
-    verdict = run(_root(), _default_checks())
+    verdict = run(_root(), _checks())
     if not verdict.ok:
         print("gate failed: " + ", ".join(verdict.failed), file=sys.stderr)
         return 1

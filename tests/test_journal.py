@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from pydacc import journal
 
@@ -69,6 +71,30 @@ class ParseTest(unittest.TestCase):
             journal.parse(
                 '[[events]]\nevent = "started"\nevent = "started"\nwork = "w-001"\nat = "2026-09-11T03:15:00Z"\n'
             )
+
+
+class AppendTest(unittest.TestCase):
+    def test_append_validates_and_writes(self):
+        root = Path(tempfile.mkdtemp())
+        path = root / "journal.toml"
+        journal.append(path, [
+            {"event": "gate", "work": "w-001", "at": "2026-09-11T03:15:00Z",
+             "gate": "commit", "tree": TREE, "passed": "1", "total": "1", "attacks": "0"},
+            {"event": "landed", "work": "w-001", "at": "2026-09-11T03:15:00Z",
+             "commit": "self", "tree": TREE},
+        ])
+        records = journal.parse(path.read_text(encoding="utf-8"))
+        self.assertEqual([r["event"] for r in records], ["gate", "landed"])
+
+    def test_append_rejects_invalid(self):
+        root = Path(tempfile.mkdtemp())
+        path = root / "journal.toml"
+        with self.assertRaises(journal.JournalError):
+            journal.append(path, [{"event": "gate", "work": "w-001", "at": "2026-09-11T03:15:00Z",
+                                   "gate": "commit", "tree": "XYZ", "passed": "1", "total": "1", "attacks": "0"}])
+
+    def test_utc_now_format(self):
+        self.assertRegex(journal.utc_now(), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 if __name__ == "__main__":

@@ -6,11 +6,13 @@ import argparse
 import sys
 from pathlib import Path
 
+import subprocess
+
 from . import __version__
 from .access import map_
 from .gate import Check, run
-from .hash import content_hash
-from .journal import parse, render
+from .hash import content_hash, index_hash
+from .journal import SELF_COMMIT, append, parse, render, utc_now
 
 DEFAULT_JOURNAL = "journal"
 
@@ -43,17 +45,44 @@ def _cmd_map(fmt: str) -> int:
     return 0
 
 
-def _cmd_gate() -> int:
-    checks = [
+def _default_checks() -> list[Check]:
+    return [
         Check("tests", ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
     ]
-    verdict = run(_root(), checks)
+
+
+def _cmd_gate() -> int:
+    verdict = run(_root(), _default_checks())
     print(f"passed={verdict.passed_count} total={verdict.total}")
     if verdict.failed:
         print("failed: " + ", ".join(verdict.failed), file=sys.stderr)
     else:
         print("passed: " + ", ".join(verdict.passed))
     return 0 if verdict.ok else 1
+
+
+def _cmd_commit(journal: str, work: str, message: str) -> int:
+    verdict = run(_root(), _default_checks())
+    if not verdict.ok:
+        print("gate failed: " + ", ".join(verdict.failed), file=sys.stderr)
+        return 1
+    tree = index_hash(_root(), journal)
+    if tree is None:
+        print("commit: cannot hash the index (nothing staged?)", file=sys.stderr)
+        return 2
+    at = utc_now()
+    events = [
+        {
+            "event": "gate", "work": work, "at": at, "gate": "commit", "tree": tree,
+            "passed": str(verdict.passed_count), "total": str(verdict.total), "attacks": "0",
+        },
+        {"event": "landed", "work": work, "at": at, "commit": SELF_COMMIT, "tree": tree},
+    ]
+    append(Path(f"{journal}.toml"), events)
+    subprocess.run(["git", "-C", str(_root()), "add", f"{journal}.toml"], check=True)
+    subprocess.run(["git", "-C", str(_root()), "commit", "-m", message], check=True)
+    print(f"landed {work} tree={tree}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     journal_sub.add_parser("show", help="print journal events")
 
     sub.add_parser("gate", help="run the check catalog")
+    commit_p = sub.add_parser("commit", help="gate → journal → commit in one command")
+    commit_p.add_argument("--work", required=True, help="work slug like w-fix-x")
+    commit_p.add_argument("-m", "--message", required=True, help="commit message")
     map_p = sub.add_parser("map", help="project map")
     map_p.add_argument("--format", choices=("text", "json"), default="text")
 
@@ -83,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_map(args.format)
     if args.command == "gate":
         return _cmd_gate()
+    if args.command == "commit":
+        return _cmd_commit(journal, args.work, args.message)
     return 2
 
 

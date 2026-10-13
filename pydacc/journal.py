@@ -9,6 +9,8 @@ gate evidence, and the anti-vacuum proof fields.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 
 SELF_COMMIT = "self"
 
@@ -208,3 +210,18 @@ def _validate(record: dict[str, str]) -> None:
     elif name == "void":
         required("voids")
         required("reason")
+
+
+def utc_now() -> str:
+    """Current UTC time as a journal timestamp."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def append(path: Path, events: list[dict[str, str]]) -> None:
+    """Validate and append events to a journal file."""
+    for event in events:
+        parse(render(event))  # validates before anything is written
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    path.write_text(existing + "".join(render(event) for event in events), encoding="utf-8")

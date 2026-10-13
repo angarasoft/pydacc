@@ -62,6 +62,12 @@ def _cmd_gate() -> int:
 
 
 def _cmd_commit(journal: str, work: str, message: str) -> int:
+    staged = subprocess.run(
+        ["git", "-C", str(_root()), "diff", "--cached", "--quiet"]
+    ).returncode != 0
+    if not staged:
+        print("commit: nothing staged — stage your work first (git add)", file=sys.stderr)
+        return 2
     verdict = run(_root(), _default_checks())
     if not verdict.ok:
         print("gate failed: " + ", ".join(verdict.failed), file=sys.stderr)

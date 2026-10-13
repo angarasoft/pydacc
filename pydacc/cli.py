@@ -11,6 +11,7 @@ import subprocess
 from . import __version__
 from .access import emit_docs, map_, refs_, where_
 from .config import load_checks
+from .docs import discover, freshness, load, render_json, render_md, validate
 from .gate import Check, run
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
@@ -126,6 +127,43 @@ def _cmd_refs(term: str) -> int:
     return 0
 
 
+def _cmd_docs_list() -> int:
+    for loc in discover(_root()):
+        print(f"{loc.rel}\t{loc.kind}\t{loc.layer}\t{loc.module}")
+    return 0
+
+
+def _cmd_docs_validate() -> int:
+    problems = validate(_root())
+    for p in problems:
+        print(p, file=sys.stderr)
+    print(f"docs validate: {'ok' if not problems else f'{len(problems)} problem(s)'}")
+    return 0 if not problems else 1
+
+
+def _cmd_docs_check() -> int:
+    """Validate refs/schema and check committed user.md freshness (for gate)."""
+    problems = validate(_root()) + freshness(_root())
+    for p in problems:
+        print(p, file=sys.stderr)
+    print(f"docs check: {'fresh' if not problems else f'{len(problems)} problem(s)'}")
+    return 0 if not problems else 1
+
+
+def _cmd_docs_render(module: str | None, fmt: str) -> int:
+    located = discover(_root())
+    if module is not None:
+        located = [l for l in located if l.module == module]
+    if not located:
+        print("docs render: no docs found", file=sys.stderr)
+        return 2
+    for loc in located:
+        doc = load(_root(), loc)
+        print(f"# {loc.rel}", file=sys.stderr)
+        print(render_json(loc, doc) if fmt == "json" else render_md(loc, doc))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pydacc", description="DACC methodology for Python")
     parser.add_argument("--version", action="version", version=f"pydacc {__version__}")
@@ -150,6 +188,15 @@ def main(argv: list[str] | None = None) -> int:
     refs_p = sub.add_parser("refs", help="where a term appears")
     refs_p.add_argument("term")
 
+    docs_p = sub.add_parser("docs", help="manage RFC/ADR/user docs as code")
+    docs_sub = docs_p.add_subparsers(dest="docs_command", required=True)
+    docs_sub.add_parser("list", help="list discovered doc modules")
+    docs_sub.add_parser("validate", help="check schema + refs")
+    docs_sub.add_parser("check", help="validate + committed user.md freshness (for gate)")
+    render_p = docs_sub.add_parser("render", help="render docs to md/json")
+    render_p.add_argument("--module", help="render only this module")
+    render_p.add_argument("--format", choices=("md", "json"), default="md")
+
     args = parser.parse_args(argv)
     journal = DEFAULT_JOURNAL
 
@@ -170,6 +217,15 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_where(args.file)
     if args.command == "refs":
         return _cmd_refs(args.term)
+    if args.command == "docs":
+        if args.docs_command == "list":
+            return _cmd_docs_list()
+        if args.docs_command == "validate":
+            return _cmd_docs_validate()
+        if args.docs_command == "check":
+            return _cmd_docs_check()
+        if args.docs_command == "render":
+            return _cmd_docs_render(args.module, args.format)
     return 2
 
 

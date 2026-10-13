@@ -35,6 +35,17 @@ class SpecTest(unittest.TestCase):
     def test_user_doc_status_accepted(self):
         self.assertEqual(user_doc("m", "t").status, Status.ACCEPTED)
 
+    def test_deprecated_status(self):
+        self.assertEqual(rfc("m", "t", "deprecated").status, Status.DEPRECATED)
+
+    def test_supersedes(self):
+        old = ref("m", "adr", "0001")
+        doc = adr(module="m", title="new", status="accepted", supersedes=(old,))
+        self.assertEqual(doc.supersedes, (old,))
+
+    def test_supersedes_default_empty(self):
+        self.assertEqual(rfc("m", "t", "draft").supersedes, ())
+
 
 if __name__ == "__main__":
     unittest.main()

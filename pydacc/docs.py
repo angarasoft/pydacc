@@ -22,6 +22,8 @@ USER_DOC_MD = "user.md"
 
 KINDS = ("rfc", "adr", "user")
 
+Key = tuple[str, str, str]  # (module, kind, ident); rfc/user use ident == ''
+
 
 @dataclass(frozen=True)
 class Located:
@@ -84,38 +86,120 @@ def load(root: Path, loc: Located) -> Doc:
     return doc
 
 
+def _index(located: list[Located]) -> dict[Key, Located]:
+    return {(l.module, l.kind, l.ident): l for l in located}
+
+
+def _load_all(root: Path) -> tuple[list[Located], dict[Key, Located], dict[Key, tuple[Located, Doc]], list[str]]:
+    """Load every doc, collecting import problems (never raising)."""
+    located = discover(root)
+    index = _index(located)
+    docs: dict[Key, tuple[Located, Doc]] = {}
+    problems: list[str] = []
+    for loc in located:
+        try:
+            doc = load(root, loc)
+        except Exception as exc:  # noqa: BLE001 — report, don't crash
+            problems.append(f"{loc.rel}: {exc}")
+            continue
+        docs[(loc.module, loc.kind, loc.ident)] = (loc, doc)
+    return located, index, docs, problems
+
+
+def _key_of(ref: Ref) -> Key:
+    return (ref.module, ref.kind, ref.ident)
+
+
+def _fmt(key: Key) -> str:
+    module, kind, ident = key
+    return f"{module}::{kind}" + (f"/{ident}" if ident else "")
+
+
+def _superseded_by(docs: dict[Key, tuple[Located, Doc]]) -> dict[Key, list[Key]]:
+    """key -> list of keys that supersede it (computed, never stored)."""
+    sb: dict[Key, list[Key]] = {}
+    for key, (_, doc) in docs.items():
+        for r in doc.supersedes:
+            sb.setdefault(_key_of(r), []).append(key)
+    return sb
+
+
+def loaded_docs(root: Path) -> tuple[dict[Key, tuple[Located, Doc]], dict[Key, list[Key]], list[str]]:
+    """(docs, superseded_by, load_problems) for CLI/API consumers."""
+    _, _, docs, problems = _load_all(root)
+    return docs, _superseded_by(docs), problems
+
+
+def effective_status(doc: Doc, superseded: bool) -> Status:
+    return Status.SUPERSEDED if superseded else doc.status
+
+
+def _supersedes_graph(docs: dict[Key, tuple[Located, Doc]]) -> dict[Key, list[Key]]:
+    return {key: [_key_of(r) for r in doc.supersedes] for key, (_, doc) in docs.items()}
+
+
+def _find_cycle(graph: dict[Key, list[Key]]) -> list[Key] | None:
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {k: WHITE for k in graph}
+
+    def dfs(k: Key, stack: list[Key]) -> list[Key] | None:
+        color[k] = GRAY
+        stack.append(k)
+        for t in graph.get(k, []):
+            if t not in color:
+                continue
+            if color[t] == GRAY:
+                idx = stack.index(t)
+                return stack[idx:] + [t]
+            if color[t] == WHITE:
+                res = dfs(t, stack)
+                if res:
+                    return res
+        stack.pop()
+        color[k] = BLACK
+        return None
+
+    for k in graph:
+        if color[k] == WHITE:
+            res = dfs(k, [])
+            if res:
+                return res
+    return None
+
+
 def _status_value(doc: Doc) -> str:
     return doc.status.value
 
 
-def to_dict(loc: Located, doc: Doc) -> dict:
-    data = {
+def to_dict(loc: Located, doc: Doc, effective: Status) -> dict:
+    return {
         "kind": loc.kind,
         "layer": loc.layer,
         "module": loc.module,
         "ident": loc.ident,
         "title": doc.title,
         "status": _status_value(doc),
+        "effective_status": effective.value,
         "summary": doc.summary,
         "sections": [{"title": s.title, "body": s.body} for s in doc.sections],
         "invariants": list(doc.invariants),
         "open_questions": list(doc.open_questions),
         "references": [{"module": r.module, "kind": r.kind, "ident": r.ident} for r in doc.references],
+        "supersedes": [{"module": r.module, "kind": r.kind, "ident": r.ident} for r in doc.supersedes],
     }
-    return data
 
 
-def render_json(loc: Located, doc: Doc) -> str:
-    return json.dumps(to_dict(loc, doc), ensure_ascii=False, indent=2)
+def render_json(loc: Located, doc: Doc, effective: Status) -> str:
+    return json.dumps(to_dict(loc, doc, effective), ensure_ascii=False, indent=2)
 
 
-def render_md(loc: Located, doc: Doc) -> str:
+def render_md(loc: Located, doc: Doc, effective: Status) -> str:
     kind_label = {"rfc": "RFC", "adr": "ADR", "user": "Пользовательская документация"}[loc.kind]
     lines: list[str] = [f"# {doc.title}", ""]
     meta = [f"- **Модуль:** `{loc.module}`", f"- **Тип:** {kind_label}"]
     if loc.ident:
         meta.append(f"- **Номер:** {loc.ident}")
-    meta.append(f"- **Статус:** {_status_value(doc)}")
+    meta.append(f"- **Статус:** {effective.value}")
     lines.extend(meta)
     if doc.summary:
         lines += ["", doc.summary]
@@ -127,51 +211,89 @@ def render_md(loc: Located, doc: Doc) -> str:
     if doc.open_questions:
         lines += ["", "## Открытые вопросы", ""]
         lines += [f"- {q}" for q in doc.open_questions]
+    if doc.supersedes:
+        lines += ["", "## Пересматривает", ""]
+        for r in doc.supersedes:
+            lines.append(f"- `{_fmt(_key_of(r))}`")
     if doc.references:
         lines += ["", "## Ссылки", ""]
         for r in doc.references:
-            target = f"{r.module}::{r.kind}" + (f"/{r.ident}" if r.ident else "")
-            lines.append(f"- `{target}`")
+            lines.append(f"- `{_fmt(_key_of(r))}`")
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _index(located: list[Located]) -> dict[tuple[str, str, str], Located]:
-    # (module, kind, ident) -> Located; rfc/user use ident == ''.
-    return {(l.module, l.kind, l.ident): l for l in located}
-
-
 def validate(root: Path) -> list[str]:
-    """Return a list of problems (empty == valid).
+    """Hard problems (empty == valid): import, kind/module, refs, supersedes.
 
-    Checks: import works, kind/module match the file location, status is a
-    valid enum (enforced at import), and every ``ref`` resolves to a discovered
-    doc in the same project.
+    Enforces: every reference/supersedes target exists, the supersedes graph is
+    acyclic, and DEPRECATED docs do not supersede anything.
     """
-    problems: list[str] = []
-    located = discover(root)
-    index = _index(located)
-    seen: dict[tuple[str, str, str], Doc] = {}
+    located, index, docs, problems = _load_all(root)
     for loc in located:
-        try:
-            doc = load(root, loc)
-        except Exception as exc:  # noqa: BLE001 — report, don't crash
-            problems.append(f"{loc.rel}: {exc}")
+        doc = docs.get((loc.module, loc.kind, loc.ident))
+        if doc is None:
             continue
+        _, doc = doc
         if doc.kind != loc.kind:
             problems.append(f"{loc.rel}: content kind {doc.kind!r} != file kind {loc.kind!r}")
         if doc.module != loc.module:
             problems.append(f"{loc.rel}: content module {doc.module!r} != dir {loc.module!r}")
-        seen[(loc.module, loc.kind, loc.ident)] = doc
-    for loc in located:
-        doc = seen.get((loc.module, loc.kind, loc.ident))
-        if doc is None:
+        for r in doc.references + doc.supersedes:
+            if _key_of(r) not in index:
+                problems.append(f"{loc.rel}: ref to missing doc `{_fmt(_key_of(r))}`")
+        if doc.status is Status.DEPRECATED and doc.supersedes:
+            problems.append(f"{loc.rel}: DEPRECATED must not supersede another doc")
+    cycle = _find_cycle(_supersedes_graph(docs))
+    if cycle:
+        chain = " -> ".join(_fmt(k) for k in cycle)
+        problems.append(f"supersedes cycle: {chain}")
+    return problems
+
+
+def warnings(root: Path) -> list[str]:
+    """Soft warnings (do not fail the gate): accepted docs referencing drafts."""
+    _, _, docs, _ = _load_all(root)
+    warns: list[str] = []
+    for key, (loc, doc) in docs.items():
+        if doc.status is not Status.ACCEPTED:
             continue
         for r in doc.references:
-            key = (r.module, r.kind, r.ident)
-            if key not in index:
-                target = f"{r.module}::{r.kind}" + (f"/{r.ident}" if r.ident else "")
-                problems.append(f"{loc.rel}: ref to missing doc `{target}`")
-    return problems
+            target = _key_of(r)
+            if target in docs and docs[target][1].status is Status.DRAFT:
+                warns.append(f"{loc.rel}: accepted doc references draft `{_fmt(target)}`")
+    return warns
+
+
+def status_report(root: Path) -> str:
+    """One table: what is actually current, per doc."""
+    located, _, docs, problems = _load_all(root)
+    sb = _superseded_by(docs)
+    rows = [f"{'doc':<36} {'declared':<12} {'effective':<12} title"]
+    for key in sorted(docs):
+        loc, doc = docs[key]
+        eff = effective_status(doc, key in sb)
+        rows.append(f"{_fmt(key):<36} {doc.status.value:<12} {eff.value:<12} {doc.title}")
+    if problems:
+        rows.append("")
+        rows += [f"! {p}" for p in problems]
+    return "\n".join(rows)
+
+
+def graph_report(root: Path, module: str | None) -> str:
+    """Show the supersedes chain per module (было → стало)."""
+    _, _, docs, _ = _load_all(root)
+    sb = _superseded_by(docs)
+    lines: list[str] = []
+    for key in sorted(docs):
+        if module is not None and key[0] != module:
+            continue
+        loc, doc = docs[key]
+        lines.append(_fmt(key))
+        for r in doc.supersedes:
+            lines.append(f"  supersedes: {_fmt(_key_of(r))}")
+        for src in sb.get(key, []):
+            lines.append(f"  superseded_by: {_fmt(src)}")
+    return "\n".join(lines) if lines else f"{module or '(all)'}: no docs"
 
 
 def freshness(root: Path) -> list[str]:
@@ -179,17 +301,18 @@ def freshness(root: Path) -> list[str]:
 
     Only user docs are committed as .md; rfc/adr render on demand.
     """
+    located, _, docs, _ = _load_all(root)
+    sb = _superseded_by(docs)
     stale: list[str] = []
-    for loc in discover(root):
+    for loc in located:
         if loc.kind != "user":
             continue
-        try:
-            doc = load(root, loc)
-        except Exception as exc:  # noqa: BLE001
-            stale.append(f"{loc.rel}: {exc}")
+        doc = docs.get((loc.module, loc.kind, loc.ident))
+        if doc is None:
             continue
+        _, doc = doc
         md_path = loc.path.parent / USER_DOC_MD
-        rendered = render_md(loc, doc)
+        rendered = render_md(loc, doc, effective_status(doc, (loc.module, loc.kind, loc.ident) in sb))
         if not md_path.exists() or md_path.read_text(encoding="utf-8") != rendered:
             stale.append(str(md_path.relative_to(root)))
     return stale

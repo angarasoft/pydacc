@@ -11,7 +11,18 @@ import subprocess
 from . import __version__
 from .access import emit_docs, map_, refs_, where_
 from .config import load_checks
-from .docs import discover, freshness, load, render_json, render_md, validate
+from .docs import (
+    discover,
+    effective_status,
+    freshness,
+    graph_report,
+    loaded_docs,
+    render_json,
+    render_md,
+    status_report,
+    validate,
+    warnings,
+)
 from .gate import Check, run
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
@@ -142,25 +153,40 @@ def _cmd_docs_validate() -> int:
 
 
 def _cmd_docs_check() -> int:
-    """Validate refs/schema and check committed user.md freshness (for gate)."""
+    """Validate refs/schema/supersedes graph and user.md freshness (for gate)."""
     problems = validate(_root()) + freshness(_root())
+    soft = warnings(_root())
     for p in problems:
         print(p, file=sys.stderr)
+    for w in soft:
+        print(f"warning: {w}", file=sys.stderr)
     print(f"docs check: {'fresh' if not problems else f'{len(problems)} problem(s)'}")
     return 0 if not problems else 1
 
 
+def _cmd_docs_status() -> int:
+    print(status_report(_root()))
+    return 0
+
+
+def _cmd_docs_graph(module: str | None) -> int:
+    print(graph_report(_root(), module))
+    return 0
+
+
 def _cmd_docs_render(module: str | None, fmt: str) -> int:
-    located = discover(_root())
+    docs, sb, _ = loaded_docs(_root())
+    keys = sorted(docs)
     if module is not None:
-        located = [l for l in located if l.module == module]
-    if not located:
+        keys = [k for k in keys if k[0] == module]
+    if not keys:
         print("docs render: no docs found", file=sys.stderr)
         return 2
-    for loc in located:
-        doc = load(_root(), loc)
+    for key in keys:
+        loc, doc = docs[key]
+        eff = effective_status(doc, key in sb)
         print(f"# {loc.rel}", file=sys.stderr)
-        print(render_json(loc, doc) if fmt == "json" else render_md(loc, doc))
+        print(render_json(loc, doc, eff) if fmt == "json" else render_md(loc, doc, eff))
     return 0
 
 
@@ -191,8 +217,11 @@ def main(argv: list[str] | None = None) -> int:
     docs_p = sub.add_parser("docs", help="manage RFC/ADR/user docs as code")
     docs_sub = docs_p.add_subparsers(dest="docs_command", required=True)
     docs_sub.add_parser("list", help="list discovered doc modules")
-    docs_sub.add_parser("validate", help="check schema + refs")
+    docs_sub.add_parser("validate", help="check schema + refs + supersedes graph")
     docs_sub.add_parser("check", help="validate + committed user.md freshness (for gate)")
+    docs_sub.add_parser("status", help="declared vs effective status of all decisions")
+    graph_p = docs_sub.add_parser("graph", help="supersedes chain (было → стало)")
+    graph_p.add_argument("--module", help="only this module")
     render_p = docs_sub.add_parser("render", help="render docs to md/json")
     render_p.add_argument("--module", help="render only this module")
     render_p.add_argument("--format", choices=("md", "json"), default="md")
@@ -224,6 +253,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_docs_validate()
         if args.docs_command == "check":
             return _cmd_docs_check()
+        if args.docs_command == "status":
+            return _cmd_docs_status()
+        if args.docs_command == "graph":
+            return _cmd_docs_graph(args.module)
         if args.docs_command == "render":
             return _cmd_docs_render(args.module, args.format)
     return 2

@@ -13,6 +13,10 @@ from enum import Enum
 class Status(Enum):
     DRAFT = "draft"
     ACCEPTED = "accepted"
+    DEPRECATED = "deprecated"
+    # SUPERSEDED is NOT written by the author: it is computed by the registry
+    # when another document supersedes this one. Kept as an enum value for
+    # rendering the effective status.
     SUPERSEDED = "superseded"
 
 
@@ -55,6 +59,9 @@ class Doc:
     invariants: tuple[str, ...] = ()
     open_questions: tuple[str, ...] = ()
     references: tuple[Ref, ...] = ()
+    # Decisions this document replaces. The superseded document's status is
+    # computed, never written there — a single source of truth for the graph.
+    supersedes: tuple[Ref, ...] = ()
     ident: str = ""           # adr number; filled by the registry for adr docs
 
 
@@ -67,6 +74,7 @@ def rfc(
     invariants: tuple[str, ...] = (),
     open_questions: tuple[str, ...] = (),
     references: tuple[Ref, ...] = (),
+    supersedes: tuple[Ref, ...] = (),
 ) -> Doc:
     return Doc(
         kind="rfc",
@@ -78,6 +86,7 @@ def rfc(
         invariants=tuple(invariants),
         open_questions=tuple(open_questions),
         references=tuple(references),
+        supersedes=tuple(supersedes),
     )
 
 
@@ -89,6 +98,7 @@ def adr(
     summary: str = "",
     sections: tuple[Section, ...] = (),
     references: tuple[Ref, ...] = (),
+    supersedes: tuple[Ref, ...] = (),
 ) -> Doc:
     # ident comes from the file name (__adr__/0001.py) — the registry fills it,
     # so it must NOT be duplicated in the content (single source, no drift).
@@ -101,6 +111,7 @@ def adr(
         summary=summary,
         sections=tuple(sections),
         references=tuple(references),
+        supersedes=tuple(supersedes),
     )
 
 

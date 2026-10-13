@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 
 from . import __version__
-from .access import map_
+from .access import emit_docs, map_, refs_, where_
 from .gate import Check, run
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
@@ -49,6 +49,7 @@ def _default_checks() -> list[Check]:
     return [
         Check("tests", ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
         Check("cargo-test", ["cargo", "test", "--manifest-path", "crates/pydacc-gate/Cargo.toml", "--quiet"]),
+        Check("emit-fresh", ["python3", "-m", "pydacc.cli", "emit", "--check"]),
     ]
 
 
@@ -92,6 +93,35 @@ def _cmd_commit(journal: str, work: str, message: str) -> int:
     return 0
 
 
+def _cmd_emit(check: bool) -> int:
+    docs = emit_docs(_root())
+    if check:
+        drifted = [
+            name
+            for name, content in docs.items()
+            if not Path(name).exists() or Path(name).read_text(encoding="utf-8") != content
+        ]
+        if drifted:
+            print("emit --check: drifted: " + ", ".join(drifted), file=sys.stderr)
+            return 1
+        print("emit --check: fresh")
+        return 0
+    for name, content in docs.items():
+        Path(name).write_text(content, encoding="utf-8")
+        print(f"emit: {name} written")
+    return 0
+
+
+def _cmd_where(file: str) -> int:
+    print(where_(_root(), file))
+    return 0
+
+
+def _cmd_refs(term: str) -> int:
+    print(refs_(_root(), term))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pydacc", description="DACC methodology for Python")
     parser.add_argument("--version", action="version", version=f"pydacc {__version__}")
@@ -109,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
     commit_p.add_argument("-m", "--message", required=True, help="commit message")
     map_p = sub.add_parser("map", help="project map")
     map_p.add_argument("--format", choices=("text", "json"), default="text")
+    emit_p = sub.add_parser("emit", help="generate AGENTS.md + QWEN.md from introspection")
+    emit_p.add_argument("--check", action="store_true", help="fail if the generated files drifted")
+    where_p = sub.add_parser("where", help="what is known about a file")
+    where_p.add_argument("--file", required=True)
+    refs_p = sub.add_parser("refs", help="where a term appears")
+    refs_p.add_argument("term")
 
     args = parser.parse_args(argv)
     journal = DEFAULT_JOURNAL
@@ -124,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_gate()
     if args.command == "commit":
         return _cmd_commit(journal, args.work, args.message)
+    if args.command == "emit":
+        return _cmd_emit(args.check)
+    if args.command == "where":
+        return _cmd_where(args.file)
+    if args.command == "refs":
+        return _cmd_refs(args.term)
     return 2
 
 

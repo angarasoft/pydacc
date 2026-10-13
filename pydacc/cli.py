@@ -48,6 +48,7 @@ def _cmd_map(fmt: str) -> int:
 def _default_checks() -> list[Check]:
     return [
         Check("tests", ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
+        Check("cargo-test", ["cargo", "test", "--manifest-path", "crates/pydacc-gate/Cargo.toml", "--quiet"]),
     ]
 
 

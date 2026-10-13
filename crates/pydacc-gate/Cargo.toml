@@ -1,0 +1,12 @@
+[package]
+name = "pydacc-gate"
+version = "0.1.0"
+edition = "2021"
+description = "Compiled gate and git hook for pydacc: enforces the journal invariants"
+
+[[bin]]
+name = "pydacc-gate"
+path = "src/main.rs"
+
+[dependencies]
+# std only — the hook build must not pull a crate graph (mirrors dacc decision 14)

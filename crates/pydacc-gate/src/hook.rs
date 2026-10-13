@@ -20,8 +20,10 @@ pub fn install(root: &Path, force: bool) -> Result<(), String> {
             ));
         }
     }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let text = format!(
-        "#!/bin/sh\n# {HOOK_MARKER}: calls the installed pydacc-gate.\nexec pydacc-gate hook pre-commit\n"
+        "#!/bin/sh\n# {HOOK_MARKER}: calls the installed pydacc-gate.\nexec {} hook pre-commit\n",
+        exe.display()
     );
     fs::write(&path, text).map_err(|e| e.to_string())?;
     #[cfg(unix)]

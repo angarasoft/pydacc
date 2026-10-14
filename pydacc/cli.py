@@ -70,10 +70,22 @@ def _checks() -> list[Check]:
     ]
 
 
+def _progress(name: str) -> None:
+    print(f"gate: {name} …", file=sys.stderr, flush=True)
+
+
+def _report_failed(verdict) -> None:
+    for name in verdict.failed:
+        print(f"\n--- {name} ---", file=sys.stderr)
+        if verdict.output.get(name):
+            print(verdict.output[name], file=sys.stderr)
+
+
 def _cmd_gate() -> int:
-    verdict = run(_root(), _checks())
+    verdict = run(_root(), _checks(), on_start=_progress)
     print(f"passed={verdict.passed_count} total={verdict.total}")
     if verdict.failed:
+        _report_failed(verdict)
         print("failed: " + ", ".join(verdict.failed), file=sys.stderr)
     else:
         print("passed: " + ", ".join(verdict.passed))
@@ -87,8 +99,10 @@ def _cmd_commit(journal: str, work: str, message: str) -> int:
     if not staged:
         print("commit: nothing staged — stage your work first (git add)", file=sys.stderr)
         return 2
-    verdict = run(_root(), _checks())
+    env = {"PYDACC_WORK": work, "PYDACC_COMMIT_MESSAGE": message}
+    verdict = run(_root(), _checks(), env=env, on_start=_progress)
     if not verdict.ok:
+        _report_failed(verdict)
         print("gate failed: " + ", ".join(verdict.failed), file=sys.stderr)
         return 1
     tree = index_hash(_root(), journal)

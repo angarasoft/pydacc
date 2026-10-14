@@ -11,6 +11,7 @@ import subprocess
 from . import __version__
 from .access import emit_docs, map_, refs_, where_
 from .config import load_checks
+from .deadfields import report as deadfields_report
 from .docs import (
     discover,
     effective_status,
@@ -138,6 +139,11 @@ def _cmd_refs(term: str) -> int:
     return 0
 
 
+def _cmd_deadfields() -> int:
+    print(deadfields_report(_root()))
+    return 0
+
+
 def _cmd_docs_list() -> int:
     for loc in discover(_root()):
         print(f"{loc.rel}\t{loc.kind}\t{loc.layer}\t{loc.module}")
@@ -213,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     where_p.add_argument("--file", required=True)
     refs_p = sub.add_parser("refs", help="where a term appears")
     refs_p.add_argument("term")
+    sub.add_parser("deadfields", help="dead-field candidates (defined but never referenced)")
 
     docs_p = sub.add_parser("docs", help="manage RFC/ADR/user docs as code")
     docs_sub = docs_p.add_subparsers(dest="docs_command", required=True)
@@ -246,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_where(args.file)
     if args.command == "refs":
         return _cmd_refs(args.term)
+    if args.command == "deadfields":
+        return _cmd_deadfields()
     if args.command == "docs":
         if args.docs_command == "list":
             return _cmd_docs_list()

@@ -8,8 +8,12 @@ from pathlib import Path
 from .introspect_ast import Model, scan
 
 
-def map_(root: Path, fmt: str = "text") -> str:
+def map_(root: Path, fmt: str = "text", addons_only: bool = True) -> str:
+    """Project map. By default only ``addons/`` (the project's own modules);
+    ``--all`` includes vendored code (build/odoo) and everything else."""
     models = scan(root)
+    if addons_only:
+        models = [m for m in models if m.path.startswith("addons")]
     if fmt == "json":
         return json.dumps([m.__dict__ for m in models], indent=2, ensure_ascii=False)
     return "\n".join(f"{m.module}\t{m.name}\t{m.path}" for m in models)

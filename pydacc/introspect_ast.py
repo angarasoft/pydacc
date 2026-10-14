@@ -54,7 +54,7 @@ def _parse_source(source: str) -> ast.AST | None:
 def scan(root: Path) -> list[Model]:
     models: list[Model] = []
     for path in sorted(root.rglob("*.py")):
-        if "__pycache__" in path.parts or ".venv" in path.parts:
+        if any(part in ("__pycache__", ".venv", ".git") for part in path.parts):
             continue
         try:
             source = path.read_text(encoding="utf-8")

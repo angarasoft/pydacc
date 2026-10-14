@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pydacc.access import emit_docs, refs_, where_
+from pydacc.access import emit_docs, map_, refs_, where_
 
 
 def _sample(root: Path) -> None:
@@ -10,6 +10,32 @@ def _sample(root: Path) -> None:
     (root / "hrm_core" / "models.py").write_text(
         'class Employee:\n    _name = "hrm.employee"\n    _fields = {"name": 1}\n'
     )
+
+
+class MapTest(unittest.TestCase):
+    def _tree(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / "addons" / "base" / "hrm_core").mkdir(parents=True)
+        (root / "addons" / "base" / "hrm_core" / "models.py").write_text(
+            'class Employee:\n    _name = "hrm.employee"\n'
+        )
+        (root / "build" / "odoo" / "addons" / "mail").mkdir(parents=True)
+        (root / "build" / "odoo" / "addons" / "mail" / "models.py").write_text(
+            'class Message:\n    _name = "mail.message"\n'
+        )
+        return root
+
+    def test_map_addons_only_by_default(self):
+        root = self._tree()
+        out = map_(root)
+        self.assertIn("hrm.employee", out)
+        self.assertNotIn("mail.message", out)
+
+    def test_map_all_includes_vendored(self):
+        root = self._tree()
+        out = map_(root, addons_only=False)
+        self.assertIn("hrm.employee", out)
+        self.assertIn("mail.message", out)
 
 
 class WhereTest(unittest.TestCase):

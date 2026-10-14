@@ -54,8 +54,8 @@ def _cmd_show(journal: str) -> int:
     return 0
 
 
-def _cmd_map(fmt: str) -> int:
-    print(map_(_root(), fmt))
+def _cmd_map(fmt: str, all_: bool) -> int:
+    print(map_(_root(), fmt, addons_only=not all_))
     return 0
 
 
@@ -211,8 +211,9 @@ def main(argv: list[str] | None = None) -> int:
     commit_p = sub.add_parser("commit", help="gate → journal → commit in one command")
     commit_p.add_argument("--work", required=True, help="work slug like w-fix-x")
     commit_p.add_argument("-m", "--message", required=True, help="commit message")
-    map_p = sub.add_parser("map", help="project map")
+    map_p = sub.add_parser("map", help="project map (default: only addons/)")
     map_p.add_argument("--format", choices=("text", "json"), default="text")
+    map_p.add_argument("--all", action="store_true", help="include vendored code (build/odoo etc.)")
     emit_p = sub.add_parser("emit", help="generate AGENTS.md + QWEN.md from introspection")
     emit_p.add_argument("--check", action="store_true", help="fail if the generated files drifted")
     where_p = sub.add_parser("where", help="what is known about a file")
@@ -242,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.journal_command == "show":
             return _cmd_show(journal)
     if args.command == "map":
-        return _cmd_map(args.format)
+        return _cmd_map(args.format, args.all)
     if args.command == "gate":
         return _cmd_gate()
     if args.command == "commit":

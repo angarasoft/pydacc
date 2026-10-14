@@ -1,8 +1,11 @@
-"""Docs registry: discover, import, render and validate RFC/ADR/user docs.
+"""Docs registry: discover, import, render and validate RFC/plan/user docs.
 
 Docs are Python modules (content = typed code, see :mod:`pydacc.spec`) imported
 by this registry and rendered to md/json. One source, many forms — the
 "self-inspecting documentation manager".
+
+One decision kind — RFC: a module contract ``__rfc__.py`` plus numbered
+decisions ``rfc/NNNN.py``; business planning lives in ``plan/NNNN.py``.
 """
 
 from __future__ import annotations
@@ -12,26 +15,27 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .spec import Doc, Ref, Status
+from .spec import Doc, RFC_SECTIONS, Ref, Status
 
-RFC_FILENAME = "__rfc__.py"
-ADR_DIRNAME = "__adr__"
+RFC_FILENAME = "__rfc__.py"  # module contract (root, pairs with __manifest__.py)
+RFC_DIRNAME = "rfc"          # numbered decisions rfc/NNNN.py (not imported by Odoo)
+PLAN_DIRNAME = "plan"        # business planning plan/NNNN.py
 USER_DOC_DIRNAME = "docs"
 USER_DOC_FILENAME = "user.py"
 USER_DOC_MD = "user.md"
 
-KINDS = ("rfc", "adr", "user")
+KINDS = ("rfc", "plan", "user")
 
-Key = tuple[str, str, str]  # (module, kind, ident); rfc/user use ident == ''
+Key = tuple[str, str, str]  # (module, kind, ident); contracts/user use ident == ''
 
 
 @dataclass(frozen=True)
 class Located:
     path: Path   # absolute path to the .py doc module
-    kind: str    # 'rfc' | 'adr' | 'user'
+    kind: str    # 'rfc' | 'plan' | 'user'
     layer: str   # 'base' | 'country' | 'solution'
     module: str  # module dir name, e.g. 'payroll_core'
-    ident: str   # adr number ('0001') or ''
+    ident: str   # decision number ('0001') or ''
     rel: str     # path relative to the scan root
 
 
@@ -49,18 +53,26 @@ def discover(root: Path) -> list[Located]:
             if not mod_dir.is_dir():
                 continue
             module = mod_dir.name
-            rfc = mod_dir / RFC_FILENAME
-            if rfc.is_file():
-                located.append(Located(rfc, "rfc", layer, module, "", str(rfc.relative_to(root))))
-            adr_dir = mod_dir / ADR_DIRNAME
-            if adr_dir.is_dir():
-                for adr_file in sorted(adr_dir.glob("*.py")):
-                    located.append(
-                        Located(adr_file, "adr", layer, module, adr_file.stem, str(adr_file.relative_to(root)))
-                    )
+            contract = mod_dir / RFC_FILENAME
+            if contract.is_file():
+                located.append(
+                    Located(contract, "rfc", layer, module, "", str(contract.relative_to(root)))
+                )
+            for dirname, kind in ((RFC_DIRNAME, "rfc"), (PLAN_DIRNAME, "plan")):
+                dec_dir = mod_dir / dirname
+                if dec_dir.is_dir():
+                    for dec_file in sorted(dec_dir.glob("*.py")):
+                        located.append(
+                            Located(
+                                dec_file, kind, layer, module, dec_file.stem,
+                                str(dec_file.relative_to(root)),
+                            )
+                        )
             user_py = mod_dir / USER_DOC_DIRNAME / USER_DOC_FILENAME
             if user_py.is_file():
-                located.append(Located(user_py, "user", layer, module, "", str(user_py.relative_to(root))))
+                located.append(
+                    Located(user_py, "user", layer, module, "", str(user_py.relative_to(root)))
+                )
     return located
 
 
@@ -80,7 +92,7 @@ def load(root: Path, loc: Located) -> Doc:
     if len(docs) != 1:
         raise ValueError(f"{loc.rel}: expected exactly one Doc, found {len(docs)}")
     doc = docs[0]
-    if loc.kind == "adr":
+    if loc.kind in ("rfc", "plan"):
         # ident is the file name (single source), never duplicated in content.
         doc = replace(doc, ident=loc.ident)
     return doc
@@ -171,6 +183,10 @@ def _status_value(doc: Doc) -> str:
     return doc.status.value
 
 
+def _impl_value(doc: Doc) -> str | None:
+    return doc.implementation.value if doc.implementation is not None else None
+
+
 def to_dict(loc: Located, doc: Doc, effective: Status) -> dict:
     return {
         "kind": loc.kind,
@@ -180,6 +196,7 @@ def to_dict(loc: Located, doc: Doc, effective: Status) -> dict:
         "title": doc.title,
         "status": _status_value(doc),
         "effective_status": effective.value,
+        "implementation": _impl_value(doc),
         "summary": doc.summary,
         "sections": [{"title": s.title, "body": s.body} for s in doc.sections],
         "invariants": list(doc.invariants),
@@ -194,12 +211,14 @@ def render_json(loc: Located, doc: Doc, effective: Status) -> str:
 
 
 def render_md(loc: Located, doc: Doc, effective: Status) -> str:
-    kind_label = {"rfc": "RFC", "adr": "ADR", "user": "Пользовательская документация"}[loc.kind]
+    kind_label = {"rfc": "RFC", "plan": "Plan", "user": "Пользовательская документация"}[loc.kind]
     lines: list[str] = [f"# {doc.title}", ""]
     meta = [f"- **Модуль:** `{loc.module}`", f"- **Тип:** {kind_label}"]
     if loc.ident:
         meta.append(f"- **Номер:** {loc.ident}")
     meta.append(f"- **Статус:** {effective.value}")
+    if doc.implementation is not None:
+        meta.append(f"- **Реализация:** {doc.implementation.value}")
     lines.extend(meta)
     if doc.summary:
         lines += ["", doc.summary]
@@ -223,10 +242,11 @@ def render_md(loc: Located, doc: Doc, effective: Status) -> str:
 
 
 def validate(root: Path) -> list[str]:
-    """Hard problems (empty == valid): import, kind/module, refs, supersedes.
+    """Hard problems (empty == valid): import, kind/module, sections, refs.
 
     Enforces: every reference/supersedes target exists, the supersedes graph is
-    acyclic, and DEPRECATED docs do not supersede anything.
+    acyclic, CANCELLED docs do not supersede anything, and rfc/plan docs carry
+    every required section (RFC_SECTIONS).
     """
     located, index, docs, problems = _load_all(root)
     for loc in located:
@@ -238,11 +258,16 @@ def validate(root: Path) -> list[str]:
             problems.append(f"{loc.rel}: content kind {doc.kind!r} != file kind {loc.kind!r}")
         if doc.module != loc.module:
             problems.append(f"{loc.rel}: content module {doc.module!r} != dir {loc.module!r}")
+        if doc.kind in ("rfc", "plan"):
+            titles = {s.title for s in doc.sections}
+            for required in RFC_SECTIONS:
+                if required not in titles:
+                    problems.append(f"{loc.rel}: missing required section {required!r}")
         for r in doc.references + doc.supersedes:
             if _key_of(r) not in index:
                 problems.append(f"{loc.rel}: ref to missing doc `{_fmt(_key_of(r))}`")
-        if doc.status is Status.DEPRECATED and doc.supersedes:
-            problems.append(f"{loc.rel}: DEPRECATED must not supersede another doc")
+        if doc.status is Status.CANCELLED and doc.supersedes:
+            problems.append(f"{loc.rel}: CANCELLED must not supersede another doc")
     cycle = _find_cycle(_supersedes_graph(docs))
     if cycle:
         chain = " -> ".join(_fmt(k) for k in cycle)
@@ -265,14 +290,15 @@ def warnings(root: Path) -> list[str]:
 
 
 def status_report(root: Path) -> str:
-    """One table: what is actually current, per doc."""
+    """One table: what is actually current, per doc, with both status axes."""
     located, _, docs, problems = _load_all(root)
     sb = _superseded_by(docs)
-    rows = [f"{'doc':<36} {'declared':<12} {'effective':<12} title"]
+    rows = [f"{'doc':<36} {'declared':<11} {'effective':<11} {'impl':<12} title"]
     for key in sorted(docs):
         loc, doc = docs[key]
         eff = effective_status(doc, key in sb)
-        rows.append(f"{_fmt(key):<36} {doc.status.value:<12} {eff.value:<12} {doc.title}")
+        impl = doc.implementation.value if doc.implementation is not None else ""
+        rows.append(f"{_fmt(key):<36} {doc.status.value:<11} {eff.value:<11} {impl:<12} {doc.title}")
     if problems:
         rows.append("")
         rows += [f"! {p}" for p in problems]
@@ -299,7 +325,7 @@ def graph_report(root: Path, module: str | None) -> str:
 def freshness(root: Path) -> list[str]:
     """Return stale committed user.md files (missing or not matching user.py).
 
-    Only user docs are committed as .md; rfc/adr render on demand.
+    Only user docs are committed as .md; rfc/plan render on demand.
     """
     located, _, docs, _ = _load_all(root)
     sb = _superseded_by(docs)

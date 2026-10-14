@@ -15,7 +15,9 @@ from pydacc.docs import (
     validate,
     warnings,
 )
-from pydacc.spec import Status
+from pydacc.spec import RFC_SECTIONS, Status
+
+SECTIONS_PY = "sections=(" + ", ".join(f'Section("{t}", "body")' for t in RFC_SECTIONS) + ")"
 
 
 def _write_module(root: Path, module: str, layer: str = "base") -> Path:
@@ -28,23 +30,34 @@ def _sample_rfc(mod: Path, status: str = "DRAFT") -> None:
     (mod / "__rfc__.py").write_text(
         "from pydacc.spec import rfc, Section, Status, ref\n"
         f'RFC = rfc(module="{mod.name}", title="Payroll Engine", status=Status.{status},'
-        ' summary="s", sections=(Section("why", "body"),), invariants=("i1",),'
-        ' references=(ref("payroll_core", "adr", "0001"),))\n'
+        f' summary="s", {SECTIONS_PY}, invariants=("i1",),'
+        ' implementation="implemented",'
+        f' references=(ref("payroll_core", "rfc", "0001"),))\n'
     )
 
 
-def _sample_adr(mod: Path, ident: str, supersedes: str = "") -> None:
-    adr_dir = mod / "__adr__"
-    adr_dir.mkdir(exist_ok=True)
+def _sample_decision(mod: Path, ident: str, supersedes: str = "") -> None:
+    dec_dir = mod / "rfc"
+    dec_dir.mkdir(exist_ok=True)
     body = (
-        "from pydacc.spec import adr, Status, ref\n"
-        f'ADR = adr(module="{mod.name}", title="Pick mechanism", status=Status.ACCEPTED,'
-        ' summary="why"'
+        "from pydacc.spec import rfc, Section, Status, ref\n"
+        f'RFC = rfc(module="{mod.name}", title="Pick mechanism", status=Status.ACCEPTED,'
+        f' summary="why", {SECTIONS_PY}'
     )
     if supersedes:
-        body += f', supersedes=(ref("{mod.name}", "adr", "{supersedes}"),)'
+        body += f', supersedes=(ref("{mod.name}", "rfc", "{supersedes}"),)'
     body += ")\n"
-    (adr_dir / f"{ident}.py").write_text(body)
+    (dec_dir / f"{ident}.py").write_text(body)
+
+
+def _sample_plan(mod: Path, ident: str) -> None:
+    plan_dir = mod / "plan"
+    plan_dir.mkdir(exist_ok=True)
+    (plan_dir / f"{ident}.py").write_text(
+        "from pydacc.spec import plan, Section, Status\n"
+        f'PLAN = plan(module="{mod.name}", title="Business reqs", status=Status.DRAFT,'
+        f' summary="why", {SECTIONS_PY})\n'
+    )
 
 
 def _sample_user(mod: Path) -> None:
@@ -68,11 +81,20 @@ class DiscoverTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
         _sample_rfc(mod)
-        _sample_adr(mod, "0001")
+        _sample_decision(mod, "0001")
+        _sample_plan(mod, "0001")
         _sample_user(mod)
         located = discover(root)
-        kinds = sorted(l.kind for l in located)
-        self.assertEqual(kinds, ["adr", "rfc", "user"])
+        kinds = {l.kind for l in located}
+        self.assertEqual(kinds, {"rfc", "plan", "user"})
+
+    def test_decision_ident_from_path(self):
+        root = Path(tempfile.mkdtemp())
+        mod = _write_module(root, "payroll_core")
+        _sample_decision(mod, "0042")
+        located = [l for l in discover(root) if l.kind == "rfc" and l.ident]
+        self.assertEqual(len(located), 1)
+        self.assertEqual(located[0].ident, "0042")
 
     def test_no_addons(self):
         root = Path(tempfile.mkdtemp())
@@ -80,20 +102,21 @@ class DiscoverTest(unittest.TestCase):
 
 
 class LoadTest(unittest.TestCase):
-    def test_load_rfc(self):
+    def test_load_rfc_contract(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
         _sample_rfc(mod)
-        loc = next(l for l in discover(root) if l.kind == "rfc")
+        loc = next(l for l in discover(root) if l.kind == "rfc" and not l.ident)
         doc = load(root, loc)
         self.assertEqual(doc.title, "Payroll Engine")
         self.assertEqual(doc.module, "payroll_core")
+        self.assertEqual(doc.ident, "")
 
-    def test_adr_ident_from_filename(self):
+    def test_decision_ident_from_filename(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0042")
-        loc = next(l for l in discover(root) if l.kind == "adr")
+        _sample_decision(mod, "0042")
+        loc = next(l for l in discover(root) if l.ident == "0042")
         self.assertEqual(load(root, loc).ident, "0042")
 
 
@@ -108,9 +131,9 @@ class RenderTest(unittest.TestCase):
         eff = Status.SUPERSEDED if key in sb else doc.status
         out = render_md(loc, doc, eff)
         self.assertIn("# Payroll Engine", out)
-        self.assertIn("## why", out)
+        self.assertIn("- **Реализация:** implemented", out)
         self.assertIn("## Инварианты", out)
-        self.assertIn("`payroll_core::adr/0001`", out)
+        self.assertIn("`payroll_core::rfc/0001`", out)
 
     def test_render_json(self):
         root = Path(tempfile.mkdtemp())
@@ -125,6 +148,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(data["module"], "payroll_core")
         self.assertEqual(data["status"], "draft")
         self.assertEqual(data["effective_status"], "draft")
+        self.assertEqual(data["implementation"], "implemented")
 
 
 class ValidateTest(unittest.TestCase):
@@ -132,20 +156,21 @@ class ValidateTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
         _sample_rfc(mod)
-        _sample_adr(mod, "0001")
+        _sample_decision(mod, "0001")
+        _sample_plan(mod, "0001")
         self.assertEqual(validate(root), [])
 
     def test_broken_ref(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_rfc(mod)  # refs adr/0001 which does not exist
+        _sample_rfc(mod)  # refs rfc/0001 which does not exist
         problems = validate(root)
         self.assertTrue(any("ref to missing doc" in p for p in problems))
 
     def test_broken_supersedes(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0002", supersedes="0001")  # 0001 does not exist
+        _sample_decision(mod, "0002", supersedes="0001")  # 0001 does not exist
         problems = validate(root)
         self.assertTrue(any("ref to missing doc" in p for p in problems))
 
@@ -159,31 +184,42 @@ class ValidateTest(unittest.TestCase):
         problems = validate(root)
         self.assertTrue(any("content kind" in p for p in problems))
 
-    def test_deprecated_must_not_supersede(self):
+    def test_missing_required_section(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0001")
-        (mod / "__adr__" / "0002.py").write_text(
-            "from pydacc.spec import adr, Status, ref\n"
-            f'ADR = adr(module="{mod.name}", title="gone", status=Status.DEPRECATED,'
-            f' supersedes=(ref("{mod.name}", "adr", "0001"),))\n'
+        (mod / "__rfc__.py").write_text(
+            "from pydacc.spec import rfc, Section, Status\n"
+            f'RFC = rfc(module="{mod.name}", title="bare", status=Status.DRAFT,'
+            ' sections=(Section("Мотивация", "body"),))\n'
         )
         problems = validate(root)
-        self.assertTrue(any("DEPRECATED must not supersede" in p for p in problems))
+        self.assertTrue(any("missing required section" in p for p in problems))
+
+    def test_cancelled_must_not_supersede(self):
+        root = Path(tempfile.mkdtemp())
+        mod = _write_module(root, "payroll_core")
+        _sample_decision(mod, "0001")
+        (mod / "rfc" / "0002.py").write_text(
+            "from pydacc.spec import rfc, Section, Status, ref\n"
+            f'RFC = rfc(module="{mod.name}", title="gone", status=Status.CANCELLED,'
+            f' {SECTIONS_PY}, supersedes=(ref("{mod.name}", "rfc", "0001"),))\n'
+        )
+        problems = validate(root)
+        self.assertTrue(any("CANCELLED must not supersede" in p for p in problems))
 
     def test_supersedes_cycle(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0001")
-        (mod / "__adr__" / "0001.py").write_text(
-            "from pydacc.spec import adr, Status, ref\n"
-            f'ADR = adr(module="{mod.name}", title="loop", status=Status.ACCEPTED,'
-            f' supersedes=(ref("{mod.name}", "adr", "0002"),))\n'
+        _sample_decision(mod, "0001")
+        (mod / "rfc" / "0001.py").write_text(
+            "from pydacc.spec import rfc, Section, Status, ref\n"
+            f'RFC = rfc(module="{mod.name}", title="loop", status=Status.ACCEPTED,'
+            f' {SECTIONS_PY}, supersedes=(ref("{mod.name}", "rfc", "0002"),))\n'
         )
-        (mod / "__adr__" / "0002.py").write_text(
-            "from pydacc.spec import adr, Status, ref\n"
-            f'ADR = adr(module="{mod.name}", title="loop2", status=Status.ACCEPTED,'
-            f' supersedes=(ref("{mod.name}", "adr", "0001"),))\n'
+        (mod / "rfc" / "0002.py").write_text(
+            "from pydacc.spec import rfc, Section, Status, ref\n"
+            f'RFC = rfc(module="{mod.name}", title="loop2", status=Status.ACCEPTED,'
+            f' {SECTIONS_PY}, supersedes=(ref("{mod.name}", "rfc", "0001"),))\n'
         )
         problems = validate(root)
         self.assertTrue(any("cycle" in p for p in problems))
@@ -193,39 +229,39 @@ class LifecycleTest(unittest.TestCase):
     def test_effective_superseded(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0001")
-        _sample_adr(mod, "0002", supersedes="0001")
-        self.assertEqual(_eff(root, "adr", "0001"), Status.SUPERSEDED)
-        self.assertEqual(_eff(root, "adr", "0002"), Status.ACCEPTED)
+        _sample_decision(mod, "0001")
+        _sample_decision(mod, "0002", supersedes="0001")
+        self.assertEqual(_eff(root, "rfc", "0001"), Status.SUPERSEDED)
+        self.assertEqual(_eff(root, "rfc", "0002"), Status.ACCEPTED)
 
     def test_status_report_marks_superseded(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0001")
-        _sample_adr(mod, "0002", supersedes="0001")
+        _sample_decision(mod, "0001")
+        _sample_decision(mod, "0002", supersedes="0001")
         out = status_report(root)
         self.assertIn("superseded", out)
 
     def test_graph_report_chain(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
-        _sample_adr(mod, "0001")
-        _sample_adr(mod, "0002", supersedes="0001")
+        _sample_decision(mod, "0001")
+        _sample_decision(mod, "0002", supersedes="0001")
         out = graph_report(root, "payroll_core")
-        self.assertIn("supersedes: payroll_core::adr/0001", out)
-        self.assertIn("superseded_by: payroll_core::adr/0002", out)
+        self.assertIn("supersedes: payroll_core::rfc/0001", out)
+        self.assertIn("superseded_by: payroll_core::rfc/0002", out)
 
     def test_warning_accepted_references_draft(self):
         root = Path(tempfile.mkdtemp())
         mod = _write_module(root, "payroll_core")
         _sample_rfc(mod, status="DRAFT")
-        _sample_adr(mod, "0001")  # accepted, no references — no warning
+        _sample_decision(mod, "0001")  # accepted, no references — no warning
         self.assertEqual(warnings(root), [])
-        # now an accepted adr references the draft rfc
-        (mod / "__adr__" / "0001.py").write_text(
-            "from pydacc.spec import adr, Status, ref\n"
-            f'ADR = adr(module="{mod.name}", title="Pick mechanism", status=Status.ACCEPTED,'
-            f' references=(ref("{mod.name}", "rfc", ""),))\n'
+        # now an accepted decision references the draft contract
+        (mod / "rfc" / "0001.py").write_text(
+            "from pydacc.spec import rfc, Section, Status, ref\n"
+            f'RFC = rfc(module="{mod.name}", title="Pick mechanism", status=Status.ACCEPTED,'
+            f' {SECTIONS_PY}, references=(ref("{mod.name}", "rfc", ""),))\n'
         )
         self.assertTrue(any("references draft" in w for w in warnings(root)))
 

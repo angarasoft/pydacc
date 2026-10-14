@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     refs_p.add_argument("term")
     sub.add_parser("deadfields", help="dead-field candidates (defined but never referenced)")
 
-    docs_p = sub.add_parser("docs", help="manage RFC/ADR/user docs as code")
+    docs_p = sub.add_parser("docs", help="manage RFC/plan/user docs as code")
     docs_sub = docs_p.add_subparsers(dest="docs_command", required=True)
     docs_sub.add_parser("list", help="list discovered doc modules")
     docs_sub.add_parser("validate", help="check schema + refs + supersedes graph")

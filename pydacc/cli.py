@@ -10,7 +10,7 @@ import subprocess
 
 from . import __version__
 from .access import emit_docs, map_, refs_, where_
-from .config import load_checks
+from .config import load_checks, load_snapshot_links
 from .deadfields import report as deadfields_report
 from .docs import (
     discover,
@@ -24,7 +24,7 @@ from .docs import (
     validate,
     warnings,
 )
-from .gate import Check, run
+from .gate import Check, has_staged, index_snapshot, run
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
 
@@ -81,8 +81,18 @@ def _report_failed(verdict) -> None:
             print(verdict.output[name], file=sys.stderr)
 
 
+def _run_checks(env: dict[str, str] | None = None):
+    """Run the catalog; `snapshot` checks see the index when something is staged
+    (a commit in progress), the working tree otherwise (a manual gate)."""
+    checks = _checks()
+    if any(c.snapshot for c in checks) and has_staged(_root()):
+        with index_snapshot(_root(), load_snapshot_links(_root())) as snap:
+            return run(_root(), checks, env=env, on_start=_progress, snapshot=snap)
+    return run(_root(), checks, env=env, on_start=_progress)
+
+
 def _cmd_gate() -> int:
-    verdict = run(_root(), _checks(), on_start=_progress)
+    verdict = _run_checks()
     print(f"passed={verdict.passed_count} total={verdict.total}")
     if verdict.failed:
         _report_failed(verdict)
@@ -100,7 +110,7 @@ def _cmd_commit(journal: str, work: str, message: str) -> int:
         print("commit: nothing staged — stage your work first (git add)", file=sys.stderr)
         return 2
     env = {"PYDACC_WORK": work, "PYDACC_COMMIT_MESSAGE": message}
-    verdict = run(_root(), _checks(), env=env, on_start=_progress)
+    verdict = _run_checks(env)
     if not verdict.ok:
         _report_failed(verdict)
         print("gate failed: " + ", ".join(verdict.failed), file=sys.stderr)

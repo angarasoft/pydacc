@@ -88,6 +88,52 @@ def _implementation(value: Implementation | str | None) -> Implementation | None
         ) from exc
 
 
+PRIORITIES: tuple[str, ...] = ("P0", "P1", "P2")
+
+
+@dataclass(frozen=True)
+class Requirement:
+    """Требование плана/RFC: не «добавить кнопку», а что, зачем и на что влияет.
+
+    Каждое требование отвечает на четыре вопроса — без ответа на любой
+    `pydacc docs check` его не примет:
+    what — что делаем (данные, правило, функция, отчёт);
+    why — зачем: основание (закон, форма, процесс) или бизнес-цель;
+    affects — на что влияет: какие расчёты, проверки, данные меняются;
+    used_in — где используется: формы, отчёты, процессы, модули-потребители.
+    """
+
+    ident: str
+    what: str
+    why: str
+    affects: str
+    used_in: tuple[str, ...]
+    priority: str = "P1"
+    target: str = ""                     # модуль, который реализует требование
+    implementation: Implementation = Implementation.PLANNED
+    refs: tuple[Ref, ...] = ()
+
+
+def req(
+    ident: str,
+    what: str,
+    *,
+    why: str,
+    affects: str,
+    used_in: tuple[str, ...] | list[str],
+    priority: str = "P1",
+    target: str = "",
+    implementation: Implementation | str = Implementation.PLANNED,
+    refs: tuple[Ref, ...] = (),
+) -> Requirement:
+    return Requirement(
+        ident=ident, what=what, why=why, affects=affects, used_in=tuple(used_in),
+        priority=priority, target=target,
+        implementation=_implementation(implementation) or Implementation.PLANNED,
+        refs=tuple(refs),
+    )
+
+
 @dataclass(frozen=True)
 class Doc:
     kind: str                 # "rfc" | "plan" | "user"
@@ -104,6 +150,7 @@ class Doc:
     supersedes: tuple[Ref, ...] = ()
     ident: str = ""           # decision number; filled by the registry for rfc/NNNN.py and plan/NNNN.py
     implementation: Implementation | None = None
+    requirements: tuple[Requirement, ...] = ()
 
 
 def _decision(
@@ -118,6 +165,7 @@ def _decision(
     references: tuple[Ref, ...],
     supersedes: tuple[Ref, ...],
     implementation: Implementation | str | None,
+    requirements: tuple[Requirement, ...] = (),
 ) -> Doc:
     return Doc(
         kind=kind,
@@ -131,6 +179,7 @@ def _decision(
         references=tuple(references),
         supersedes=tuple(supersedes),
         implementation=_implementation(implementation),
+        requirements=tuple(requirements),
     )
 
 
@@ -145,11 +194,12 @@ def rfc(
     references: tuple[Ref, ...] = (),
     supersedes: tuple[Ref, ...] = (),
     implementation: Implementation | str | None = None,
+    requirements: tuple[Requirement, ...] | list[Requirement] = (),
 ) -> Doc:
     """RFC: модульный контракт (``__rfc__.py``) или решение (``rfc/NNNN.py``)."""
     return _decision(
         "rfc", module, title, status, summary, sections, invariants,
-        open_questions, references, supersedes, implementation,
+        open_questions, references, supersedes, implementation, tuple(requirements),
     )
 
 
@@ -164,11 +214,12 @@ def plan(
     references: tuple[Ref, ...] = (),
     supersedes: tuple[Ref, ...] = (),
     implementation: Implementation | str | None = None,
+    requirements: tuple[Requirement, ...] | list[Requirement] = (),
 ) -> Doc:
     """Plan: бизнес-планирование ДО решений (``plan/NNNN.py``), та же механика."""
     return _decision(
         "plan", module, title, status, summary, sections, invariants,
-        open_questions, references, supersedes, implementation,
+        open_questions, references, supersedes, implementation, tuple(requirements),
     )
 
 

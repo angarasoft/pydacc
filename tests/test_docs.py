@@ -287,3 +287,52 @@ class FreshnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequirementTest(unittest.TestCase):
+    """Требование отвечает на «что / зачем / на что влияет / где используется»."""
+
+    def _plan(self, reqs: str) -> Path:
+        root = Path(tempfile.mkdtemp())
+        mod = _write_module(root, "hrm_x")
+        (mod / "plan").mkdir()
+        (mod / "plan" / "0001.py").write_text(
+            "from pydacc.spec import plan, req, Section, Status\n"
+            f'PLAN = plan(module="hrm_x", title="P", status=Status.DRAFT, {SECTIONS_PY},'
+            f" requirements=({reqs},))\n"
+        )
+        return root
+
+    GOOD = ('req("R-1", "Табельный номер", why="ТК РФ, форма Т-2", affects="уникальность работника",'
+            ' used_in=("Т-2", "Т-13"), priority="P0", target="hrm_core")')
+
+    def test_valid_requirement(self):
+        self.assertEqual(validate(self._plan(self.GOOD)), [])
+
+    def test_empty_answers_rejected(self):
+        bad = 'req("R-1", "Кнопка", why="", affects=" ", used_in=())'
+        problems = "\n".join(validate(self._plan(bad)))
+        for field in ("'why'", "'affects'", "'used_in'"):
+            self.assertIn(field, problems)
+
+    def test_duplicate_and_priority(self):
+        problems = "\n".join(validate(self._plan(self.GOOD + ", " + self.GOOD.replace('"P0"', '"P9"'))))
+        self.assertIn("duplicate ident", problems)
+        self.assertIn("priority 'P9'", problems)
+
+    def test_broken_ref(self):
+        bad = self.GOOD[:-1] + ', refs=(ref("nope", "rfc"),))'
+        root = self._plan(bad)
+        p = root / "addons/base/hrm_x/plan/0001.py"
+        p.write_text(p.read_text().replace("import plan, req,", "import plan, req, ref,"))
+        self.assertIn("ref to missing doc", "\n".join(validate(root)))
+
+    def test_rendered(self):
+        root = self._plan(self.GOOD)
+        docs, _, _ = loaded_docs(root)
+        (loc, doc), = docs.values()
+        md = render_md(loc, doc, Status.DRAFT)
+        self.assertIn("### R-1. Табельный номер", md)
+        self.assertIn("**Где используется:** Т-2; Т-13", md)
+        data = json.loads(render_json(loc, doc, Status.DRAFT))
+        self.assertEqual(data["requirements"][0]["used_in"], ["Т-2", "Т-13"])

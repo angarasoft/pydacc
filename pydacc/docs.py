@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .spec import Doc, RFC_SECTIONS, Ref, Status
+from .spec import PRIORITIES, Doc, RFC_SECTIONS, Ref, Status
 
 RFC_FILENAME = "__rfc__.py"  # module contract (root, pairs with __manifest__.py)
 RFC_DIRNAME = "rfc"          # numbered decisions rfc/NNNN.py (not imported by Odoo)
@@ -203,6 +203,15 @@ def to_dict(loc: Located, doc: Doc, effective: Status) -> dict:
         "open_questions": list(doc.open_questions),
         "references": [{"module": r.module, "kind": r.kind, "ident": r.ident} for r in doc.references],
         "supersedes": [{"module": r.module, "kind": r.kind, "ident": r.ident} for r in doc.supersedes],
+        "requirements": [
+            {
+                "ident": q.ident, "what": q.what, "why": q.why, "affects": q.affects,
+                "used_in": list(q.used_in), "priority": q.priority, "target": q.target,
+                "implementation": q.implementation.value,
+                "refs": [{"module": r.module, "kind": r.kind, "ident": r.ident} for r in q.refs],
+            }
+            for q in doc.requirements
+        ],
     }
 
 
@@ -224,6 +233,21 @@ def render_md(loc: Located, doc: Doc, effective: Status) -> str:
         lines += ["", doc.summary]
     for s in doc.sections:
         lines += ["", f"## {s.title}", "", s.body]
+    if doc.requirements:
+        lines += ["", "## Требования", ""]
+        for q in doc.requirements:
+            target = f" → `{q.target}`" if q.target else ""
+            lines += [
+                f"### {q.ident}. {q.what}",
+                "",
+                f"- **Приоритет:** {q.priority}{target}; реализация: {q.implementation.value}",
+                f"- **Зачем:** {q.why}",
+                f"- **Влияет на:** {q.affects}",
+                f"- **Где используется:** {'; '.join(q.used_in)}",
+            ]
+            if q.refs:
+                lines.append("- **Связано:** " + ", ".join(f"`{_fmt(_key_of(r))}`" for r in q.refs))
+            lines.append("")
     if doc.invariants:
         lines += ["", "## Инварианты", ""]
         lines += [f"- {i}" for i in doc.invariants]
@@ -266,12 +290,37 @@ def validate(root: Path) -> list[str]:
         for r in doc.references + doc.supersedes:
             if _key_of(r) not in index:
                 problems.append(f"{loc.rel}: ref to missing doc `{_fmt(_key_of(r))}`")
+        problems += _requirement_problems(loc.rel, doc, index)
         if doc.status is Status.CANCELLED and doc.supersedes:
             problems.append(f"{loc.rel}: CANCELLED must not supersede another doc")
     cycle = _find_cycle(_supersedes_graph(docs))
     if cycle:
         chain = " -> ".join(_fmt(k) for k in cycle)
         problems.append(f"supersedes cycle: {chain}")
+    return problems
+
+
+def _requirement_problems(rel: str, doc: Doc, index) -> list[str]:
+    """Требование без ответа «зачем / на что влияет / где используется» — не требование."""
+    problems: list[str] = []
+    seen: set[str] = set()
+    for q in doc.requirements:
+        label = f"{rel}: requirement {q.ident or '?'}"
+        if not q.ident:
+            problems.append(f"{label}: empty ident")
+        elif q.ident in seen:
+            problems.append(f"{label}: duplicate ident")
+        seen.add(q.ident)
+        for name in ("what", "why", "affects"):
+            if not getattr(q, name).strip():
+                problems.append(f"{label}: empty {name!r}")
+        if not any(u.strip() for u in q.used_in):
+            problems.append(f"{label}: empty 'used_in'")
+        if q.priority not in PRIORITIES:
+            problems.append(f"{label}: priority {q.priority!r} not in {PRIORITIES}")
+        for r in q.refs:
+            if _key_of(r) not in index:
+                problems.append(f"{label}: ref to missing doc `{_fmt(_key_of(r))}`")
     return problems
 
 

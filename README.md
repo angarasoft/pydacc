@@ -111,6 +111,68 @@ stories come in module dependency order and additionally carry `module`,
 `ident`, `implements` (`[{module, kind, ident}]`), `requirements`, `dev_notes`
 (`[str]`) and `tests` in every scenario.
 
+### In-app help export (`static/help/stories.json`)
+
+`pydacc docs help [--check] [--module M]` writes, for every module with
+stories, `addons/<layer>/<module>/static/help/stories.json` with that module's
+OWN stories — base stories and extensions as written, NOT composed: which
+extensions apply depends on what is installed, so the help module (Odoo
+`core_help`) composes them at runtime. A `static/help/stories.json` in a
+module without stories is an orphan and is deleted. Only stale files are
+rewritten; the command refuses (exit 2) when a story of an exported module
+does not load or `--module` names no module.
+
+- `--check` writes nothing, prints the stale files (missing, outdated,
+  orphan), exits 1 if any.
+- `pydacc docs check` reports the same files as
+  `<path>: stale help export — run \`pydacc docs help\`` (like `docs/user.md`
+  freshness); a module with no stories and no file is fine.
+
+The file is deterministic (`json.dumps(..., ensure_ascii=False, indent=1)` +
+newline, stories by number, keys in this order); `format` is bumped on
+incompatible changes. End-user audience only: no tests, Дано/Когда/Тогда,
+`implements`, `requirements` or `dev_notes`.
+
+```text
+{
+  "format": 1, "module": "<module>",
+  "stories": [{
+    "key": "<module>::story/NNNN",
+    "ident": "NNNN",
+    "extends": "<module>::story/NNNN" | null,  # null = base story
+    "section": str, "order": int,               # base only ("" / 100 in an extension)
+    "title": str,
+    "intro": str, "role": str, "goal": str, "benefit": str,   # base only
+    "menus": [str],                             # "<module>.<menu xml id>"
+    "steps": [{"text": str, "screenshot": str}],  # screenshot: URL "/<module>/<path inside
+                                                  # the module>" ("" = none)
+    "scenarios": [{"ident": str, "title": str, "text": str}],
+    "replaces": {"<ident>": {"ident": str, "title": str, "text": str}},
+    "steps_after": {"<anchor step text>": [{"text": str, "screenshot": str}]},
+    "notes": [str]                              # the story's own «Важно» (0 or 1 item)
+  }]
+}
+```
+
+Composition a consumer must apply (mirrors `pydacc` `compose`):
+
+1. Load the files of the installed modules; for every base story
+   (`extends: null`) collect the stories whose `extends` chain leads to it,
+   keeping only those whose whole chain is installed.
+2. Apply the base, then the extensions in module dependency order (dependencies
+   first, ties by module name; an extension of an extension after the one it
+   extends). Applying one story:
+   - `replaces`: swap the scenario with that `ident` in place;
+   - `scenarios`: append;
+   - `steps_after`: insert after the first step whose text equals the key
+     exactly, and after the steps earlier stories already inserted there (a later
+     extension reads after an earlier one); an unknown anchor is skipped;
+   - `steps`: append;
+   - `menus`: merge, keeping the first occurrence;
+   - `notes`: append.
+3. `key`, `section`, `order`, `title`, `intro`, `role`, `goal`, `benefit` come
+   from the base story.
+
 ## Not done yet (next slices)
 
 - Runtime Odoo-registry introspection (the authoritative gate catalog).

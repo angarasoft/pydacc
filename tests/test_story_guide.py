@@ -184,6 +184,7 @@ class GuideFieldChecksTest(unittest.TestCase):
 
     def test_check_cli(self):
         root = _guide_tree()
+        _cli(root, "docs", "help")  # committed help export (test_story_help)
         self.assertEqual(_cli(root, "docs", "check")[:2], (0, "docs check: fresh\n"))
         _story(root / CORE, "0006", ' title="M",' + _base_story(' section="S", menus=("hrm_core.nope",),'))
         code, _, err = _cli(root, "docs", "check")

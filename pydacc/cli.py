@@ -25,6 +25,7 @@ from .docs import (
     validate,
     warnings,
 )
+from .help import HelpError, help_exports, help_freshness, write_help
 from .gate import Check, has_staged, index_snapshot, run
 from .stories import AUDIENCES, compose, render_guide_json, render_guide_md, render_story_json, render_story_md
 from .hash import content_hash, index_hash
@@ -185,8 +186,8 @@ def _cmd_docs_validate() -> int:
 
 
 def _cmd_docs_check() -> int:
-    """Validate refs/schema/supersedes graph and user.md freshness (for gate)."""
-    problems = validate(_root()) + freshness(_root())
+    """Validate refs/schema/supersedes graph, user.md and help export freshness (for gate)."""
+    problems = validate(_root()) + freshness(_root()) + help_freshness(_root())
     soft = warnings(_root())
     for p in problems:
         print(p, file=sys.stderr)
@@ -225,6 +226,24 @@ def _cmd_docs_render(module: str | None, fmt: str) -> int:
         eff = effective_status(doc, key in sb)
         print(f"# {loc.rel}", file=sys.stderr)
         print(render_json(loc, doc, eff) if fmt == "json" else render_md(loc, doc, eff))
+    return 0
+
+
+def _cmd_docs_help(check: bool, module: str | None) -> int:
+    """Per-module in-app help: ``static/help/stories.json`` of each module with stories."""
+    try:
+        exports = help_exports(_root(), module)
+    except HelpError as exc:
+        print(f"docs help: {exc}", file=sys.stderr)
+        return 2
+    if check:
+        stale = [e.rel for e in exports if e.stale()]
+        for rel in stale:
+            print(rel)
+        print(f"docs help --check: {'fresh' if not stale else f'{len(stale)} stale'}", file=sys.stderr)
+        return 1 if stale else 0
+    for rel, action in write_help(exports):
+        print(f"docs help: {rel} {action}")
     return 0
 
 
@@ -275,10 +294,15 @@ def main(argv: list[str] | None = None) -> int:
     docs_sub = docs_p.add_subparsers(dest="docs_command", required=True)
     docs_sub.add_parser("list", help="list discovered doc modules")
     docs_sub.add_parser("validate", help="check schema + refs + supersedes graph")
-    docs_sub.add_parser("check", help="validate + committed user.md freshness (for gate)")
+    docs_sub.add_parser("check", help="validate + committed user.md / help export freshness (for gate)")
     docs_sub.add_parser("status", help="declared vs effective status of all decisions")
     graph_p = docs_sub.add_parser("graph", help="supersedes chain (было → стало)")
     graph_p.add_argument("--module", help="only this module")
+    help_p = docs_sub.add_parser(
+        "help", help="write static/help/stories.json (in-app help) of every module with stories"
+    )
+    help_p.add_argument("--check", action="store_true", help="write nothing; print stale files, exit 1 if any")
+    help_p.add_argument("--module", help="only this module")
     render_p = docs_sub.add_parser("render", help="render docs to md/json")
     render_target = render_p.add_mutually_exclusive_group()
     render_target.add_argument("--module", help="render only this module")
@@ -324,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_docs_status()
         if args.docs_command == "graph":
             return _cmd_docs_graph(args.module)
+        if args.docs_command == "help":
+            return _cmd_docs_help(args.check, args.module)
         if args.docs_command == "render":
             if args.solution is not None:
                 return _cmd_docs_guide(args.solution, args.format, args.audience or "dev")

@@ -263,8 +263,10 @@ class ValidateStoriesTest(unittest.TestCase):
     """Каждое правило — падающий и проходящий случай; проходящий — `_tree()`."""
 
     def test_valid_tree(self):
-        self.assertEqual(validate(_tree()), [])
-        code, out, _ = _cli(_tree(), "docs", "check")
+        root = _tree()
+        self.assertEqual(validate(root), [])
+        _cli(root, "docs", "help")  # committed help export (test_story_help)
+        code, out, _ = _cli(root, "docs", "check")
         self.assertEqual((code, out), (0, "docs check: fresh\n"))
 
     # a) shape

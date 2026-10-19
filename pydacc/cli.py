@@ -26,7 +26,7 @@ from .docs import (
     warnings,
 )
 from .gate import Check, has_staged, index_snapshot, run
-from .stories import compose, render_guide_json, render_guide_md, render_story_json, render_story_md
+from .stories import AUDIENCES, compose, render_guide_json, render_guide_md, render_story_json, render_story_md
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
 
@@ -228,8 +228,8 @@ def _cmd_docs_render(module: str | None, fmt: str) -> int:
     return 0
 
 
-def _cmd_docs_guide(solution: str, fmt: str) -> int:
-    """User guide of a solution: stories of its depends closure, superposed."""
+def _cmd_docs_guide(solution: str, fmt: str, audience: str) -> int:
+    """Guide of a solution: stories of its depends closure, superposed."""
     try:
         composed = compose(_root(), solution)
     except ValueError as exc:
@@ -239,9 +239,9 @@ def _cmd_docs_guide(solution: str, fmt: str) -> int:
         print(f"docs render: no stories for solution {solution!r}", file=sys.stderr)
         return 2
     if fmt == "json":
-        print(render_guide_json(composed, solution))
+        print(render_guide_json(composed, solution, audience))
     else:
-        print(render_guide_md(_root(), composed, solution), end="")
+        print(render_guide_md(_root(), composed, solution, audience), end="")
     return 0
 
 
@@ -286,6 +286,10 @@ def main(argv: list[str] | None = None) -> int:
         "--solution", help="user guide of this solution: stories of its depends closure, superposed"
     )
     render_p.add_argument("--format", choices=("md", "json"), default="md")
+    render_p.add_argument(
+        "--audience", choices=AUDIENCES, default=None,
+        help="with --solution: dev (default; tests, modules, menus) or user (end-user guide by section)",
+    )
 
     args = parser.parse_args(argv)
     journal = DEFAULT_JOURNAL
@@ -322,7 +326,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_docs_graph(args.module)
         if args.docs_command == "render":
             if args.solution is not None:
-                return _cmd_docs_guide(args.solution, args.format)
+                return _cmd_docs_guide(args.solution, args.format, args.audience or "dev")
+            if args.audience is not None:
+                print("docs render: --audience needs --solution", file=sys.stderr)
+                return 2
             return _cmd_docs_render(args.module, args.format)
     return 2
 

@@ -251,6 +251,8 @@ class Scenario:
 
     tests — dotted ids ``<module>.tests.<test_file>[.<Class>[.<method>]]``;
     `pydacc docs check` resolves each to a file, class and method.
+    title — short user-facing caption («Приём с будущей даты»); the user
+    guide shows it instead of the ident.
     """
 
     ident: str                      # "S1"; unique within the composed story
@@ -258,6 +260,7 @@ class Scenario:
     when: str
     then: str
     tests: tuple[str, ...] = ()
+    title: str = ""
 
 
 def scenario(
@@ -266,8 +269,9 @@ def scenario(
     when: str,
     then: str,
     tests: tuple[str, ...] | list[str] = (),
+    title: str = "",
 ) -> Scenario:
-    return Scenario(ident=ident, given=given, when=when, then=then, tests=tuple(tests))
+    return Scenario(ident=ident, given=given, when=when, then=then, tests=tuple(tests), title=title)
 
 
 @dataclass(frozen=True)
@@ -298,6 +302,9 @@ def _steps(items: tuple[StepLike, ...] | list[StepLike]) -> tuple[Step, ...]:
     return tuple(out)
 
 
+DEFAULT_STORY_ORDER = 100
+
+
 @dataclass(frozen=True)
 class Story:
     """Пользовательская история модуля (``stories/NNNN.py``).
@@ -307,6 +314,13 @@ class Story:
     ``scenarios`` are added, ``replaces`` swaps base scenarios by ident,
     ``steps_after`` inserts steps after a base step (exact text), ``steps`` are
     appended. role/goal/benefit always come from the base story.
+
+    Guide placement (base story only; an extension inherits it): ``section`` is
+    the guide chapter, ``order`` the place within it. ``menus`` are fully
+    qualified xml ids of the menu items the story belongs to (in-app help shows
+    it to users who see one of them); an extension may add menus. ``notes`` is
+    the user-facing «Важно» note, ``dev_notes`` technical details rendered only
+    for developers; extensions append both.
     """
 
     module: str
@@ -322,6 +336,10 @@ class Story:
     replaces: dict[str, Scenario] = field(default_factory=dict, hash=False)
     steps_after: dict[str, tuple[Step, ...]] = field(default_factory=dict, hash=False)
     notes: str = ""
+    section: str = ""                       # guide chapter («Работники»); base only
+    order: int = DEFAULT_STORY_ORDER        # place within the section; base only
+    menus: tuple[str, ...] = ()             # "<module>.<menu xml id>"
+    dev_notes: str = ""                     # technical details, developer guide only
     ident: str = ""                         # filled by the registry from the file name
     kind: str = "story"
 
@@ -340,10 +358,18 @@ def story(
     replaces: dict[str, Scenario] | None = None,
     steps_after: dict[str, tuple[StepLike, ...] | list[StepLike]] | None = None,
     notes: str = "",
+    section: str = "",
+    order: int = DEFAULT_STORY_ORDER,
+    menus: tuple[str, ...] | list[str] = (),
+    dev_notes: str = "",
 ) -> Story:
     """User story (``stories/NNNN.py``); an extension sets ``extends``."""
     if extends is not None and not isinstance(extends, Ref):
         raise TypeError("extends must be ref(module, 'story', 'NNNN')")
+    if isinstance(menus, str):
+        raise TypeError("menus must be a tuple of xml ids, e.g. ('hrm_core.menu_x',)")
+    if isinstance(order, bool) or not isinstance(order, int):
+        raise TypeError("order must be an int")
     return Story(
         module=module,
         title=title,
@@ -361,4 +387,8 @@ def story(
             for anchor, v in (steps_after or {}).items()
         },
         notes=notes,
+        section=section,
+        order=order,
+        menus=tuple(menus),
+        dev_notes=dev_notes,
     )

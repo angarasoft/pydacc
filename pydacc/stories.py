@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import ast
 import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .docs import Key, Located, Stories, _find_cycle, _fmt, _key_of, loaded_stories
-from .spec import Doc, Ref, Scenario, Step, Story
+from .spec import DEFAULT_STORY_ORDER, Doc, Ref, Scenario, Step, Story
 
 MANIFEST = "__manifest__.py"
 TEST_ID_HELP = "<module>.tests.<test_file>[.<Class>[.<method>]]"
@@ -121,7 +122,15 @@ class ComposedStory:
     modules: tuple[str, ...]           # base module, then extensions in applied order
     implements: tuple[Ref, ...]
     requirements: tuple[str, ...]
-    notes: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()        # user-facing «Важно», base first, then extensions
+    section: str = ""                  # guide chapter of the base story
+    order: int = DEFAULT_STORY_ORDER
+    menus: tuple[str, ...] = ()        # base menus, then the ones extensions add
+    dev_notes: tuple[str, ...] = ()    # developer guide only
+
+    @property
+    def key(self) -> str:
+        return f"{self.module}::story/{self.ident}"
 
 
 @dataclass(eq=False)
@@ -148,6 +157,8 @@ class _Draft:
     implements: list[Ref] = field(default_factory=list)
     requirements: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    menus: list[str] = field(default_factory=list)
+    dev_notes: list[str] = field(default_factory=list)
 
 
 def _module_rel(loc: Located) -> Path:
@@ -194,8 +205,11 @@ def _apply(draft: _Draft, loc: Located, story: Story) -> None:
     _extend_unique(draft.modules, [loc.module])
     _extend_unique(draft.implements, story.implements)
     _extend_unique(draft.requirements, story.requirements)
+    _extend_unique(draft.menus, story.menus)
     if story.notes:
         draft.notes.append(story.notes)
+    if story.dev_notes:
+        draft.dev_notes.append(story.dev_notes)
 
 
 def _finish(draft: _Draft) -> ComposedStory:
@@ -206,6 +220,8 @@ def _finish(draft: _Draft) -> ComposedStory:
         scenarios=tuple(draft.scenarios), steps=tuple(e.step for e in draft.steps),
         modules=tuple(draft.modules), implements=tuple(draft.implements),
         requirements=tuple(draft.requirements), notes=tuple(draft.notes),
+        section=base.section, order=base.order,
+        menus=tuple(draft.menus), dev_notes=tuple(draft.dev_notes),
     )
 
 
@@ -323,6 +339,56 @@ class _TestIndex:
         return None
 
 
+MENU_HELP = "<module>.<menu xml id>"
+
+
+class _MenuIndex:
+    """Menu xml ids a module defines in its XML data files (parsed once per module).
+
+    A menu is ``<menuitem id="X">`` (nested ones included) or
+    ``<record model="ir.ui.menu" id="X">``; inside its own module the id may be
+    written with or without the module prefix. Ids prefixed with another module
+    (overrides of foreign menus) do not define a menu of this module.
+    """
+
+    def __init__(self, root: Path, mods: dict[str, ModuleInfo]):
+        self.root = root
+        self.mods = mods
+        self._ids: dict[str, tuple[set[str], list[str]]] = {}
+
+    def _scan(self, module: str) -> tuple[set[str], list[str]]:
+        if module not in self._ids:
+            ids: set[str] = set()
+            unparsable: list[str] = []
+            for path in sorted(self.mods[module].path.rglob("*.xml")):
+                try:
+                    tree = ET.parse(path)
+                except (ET.ParseError, OSError):
+                    unparsable.append(path.relative_to(self.root).as_posix())
+                    continue
+                for el in tree.iter():
+                    if el.tag == "menuitem" or (el.tag == "record" and el.get("model") == "ir.ui.menu"):
+                        prefix, _, name = (el.get("id") or "").rpartition(".")
+                        if name and prefix in ("", module):
+                            ids.add(name)
+            self._ids[module] = (ids, unparsable)
+        return self._ids[module]
+
+    def problem(self, menu: str, story_module: str) -> str | None:
+        module, dot, name = menu.partition(".")
+        if not dot or not module or not name or "." in name:
+            return f"expected {MENU_HELP}"
+        if module != story_module and module not in depends_closure(self.mods, story_module):
+            return f"module {module!r} not in depends closure of {story_module!r}"
+        if module not in self.mods:
+            return f"module {module!r} not found under addons/"
+        ids, unparsable = self._scan(module)
+        if name in ids:
+            return None
+        hint = f" (unparsable: {', '.join(unparsable)})" if unparsable else ""
+        return f"not found in module {module!r}{hint}"
+
+
 @dataclass
 class _Ctx:
     root: Path
@@ -330,6 +396,7 @@ class _Ctx:
     stories: Stories
     mods: dict[str, ModuleInfo]
     tests: _TestIndex
+    menus: _MenuIndex
 
 
 def _content_problems(story: Story) -> list[str]:
@@ -345,8 +412,13 @@ def _content_problems(story: Story) -> list[str]:
             problems.append("base story needs at least one scenario")
         if story.replaces or story.steps_after:
             problems.append("replaces/steps_after need extends")
-    elif story.role or story.goal or story.benefit:
-        problems.append("extension must not set role/goal/benefit (taken from the base story)")
+        if story.menus and not story.section.strip():
+            problems.append("menus need 'section' (the guide chapter)")
+    else:
+        if story.role or story.goal or story.benefit:
+            problems.append("extension must not set role/goal/benefit (taken from the base story)")
+        if story.section or story.order != DEFAULT_STORY_ORDER:
+            problems.append("extension must not set section/order (taken from the base story)")
     return problems
 
 
@@ -413,6 +485,8 @@ def _superposition_problems(ctx: _Ctx, loc: Located, story: Story) -> list[str]:
     for anchor in story.steps_after:
         if anchor not in base_steps:
             problems.append(f"steps_after {anchor!r}: no such step in composed base {label}")
+    if story.menus and not base.section.strip():
+        problems.append(f"menus need 'section' in the base story {label}")
     return problems
 
 
@@ -468,6 +542,21 @@ def _screenshot_problems(ctx: _Ctx, loc: Located, story: Story) -> list[str]:
     return problems
 
 
+def _menu_problems(ctx: _Ctx, loc: Located, story: Story) -> list[str]:
+    """h) every menu xml id resolves to a menu of the module or of its depends closure."""
+    problems: list[str] = []
+    seen: set[str] = set()
+    for menu in story.menus:
+        if menu in seen:
+            problems.append(f"menu {menu!r}: duplicate")
+            continue
+        seen.add(menu)
+        problem = ctx.menus.problem(menu, loc.module)
+        if problem:
+            problems.append(f"menu {menu!r}: {problem}")
+    return problems
+
+
 def _one_story(ctx: _Ctx, loc: Located, story: Story) -> list[str]:
     problems: list[str] = []
     if story.module != loc.module:
@@ -480,6 +569,7 @@ def _one_story(ctx: _Ctx, loc: Located, story: Story) -> list[str]:
     problems += _implements_problems(ctx, loc, story)
     problems += _test_problems(ctx, story)
     problems += _screenshot_problems(ctx, loc, story)
+    problems += _menu_problems(ctx, loc, story)
     return [f"{loc.rel}: {p}" for p in problems]
 
 
@@ -501,7 +591,7 @@ def _composed_problems(ctx: _Ctx) -> list[str]:
 def story_problems(root: Path, docs: dict[Key, tuple[Located, Doc]], stories: Stories) -> list[str]:
     """Hard problems of every story (feeds `pydacc docs check`)."""
     mods, problems = modules(root)
-    ctx = _Ctx(root, docs, stories, mods, _TestIndex(root, mods))
+    ctx = _Ctx(root, docs, stories, mods, _TestIndex(root, mods), _MenuIndex(root, mods))
     for key in sorted(stories):
         problems += _one_story(ctx, *stories[key])
     graph = {k: ([_key_of(s.extends)] if s.extends else []) for k, (_, s) in stories.items()}
@@ -514,6 +604,15 @@ def story_problems(root: Path, docs: dict[Key, tuple[Located, Doc]], stories: St
 
 # --------------------------------------------------------------------------
 # Rendering
+#
+# Two audiences of a solution guide: ``dev`` (stories as specs: scenarios with
+# their tests, modules, menus, technical notes) and ``user`` (an end-user
+# guide: chapters by section, how-to steps, scenarios as plain rules, «Важно»
+# notes; no tests, idents of refs, module names or technical notes).
+
+AUDIENCES = ("dev", "user")
+GUIDE_FORMAT = 1               # version of the guide JSON layout (README)
+OTHER_SECTION = "Прочее"       # chapter of the stories without a section
 
 
 def _sentence(role: str, goal: str, benefit: str) -> str:
@@ -539,8 +638,9 @@ def _steps_md(steps: tuple[Step, ...]) -> list[str]:
 
 
 def _scenario_md(root: Path, mods: dict[str, ModuleInfo], sc: Scenario, level: str) -> list[str]:
+    heading = f"{sc.ident} — {sc.title}" if sc.title else sc.ident
     lines = [
-        f"{level} {sc.ident}",
+        f"{level} {heading}",
         "",
         f"- **Дано:** {sc.given}",
         f"- **Когда:** {sc.when}",
@@ -572,6 +672,10 @@ def _own(loc: Located, story: Story) -> ComposedStory:
     return _finish(draft)
 
 
+def _placement(section: str, order: int) -> str:
+    return section + ("" if order == DEFAULT_STORY_ORDER else f" (порядок {order})")
+
+
 def render_story_md(root: Path, loc: Located, story: Story) -> str:
     """One story file as md: what it says by itself (an extension shows its delta)."""
     mods, _ = modules(root)
@@ -579,6 +683,8 @@ def render_story_md(root: Path, loc: Located, story: Story) -> str:
     lines.append(f"- **Номер:** {loc.ident}")
     if story.extends is not None:
         lines.append(f"- **Расширяет:** `{_fmt(_key_of(story.extends))}`")
+    if story.section:
+        lines.append(f"- **Раздел:** {_placement(story.section, story.order)}")
     lines.append("")
     lines += _story_body_md(root, mods, _own(loc, story), "##")
     if story.replaces:
@@ -595,13 +701,16 @@ def render_story_md(root: Path, loc: Located, story: Story) -> str:
         lines.append("")
     if story.requirements:
         lines += ["## Требования", "", *(f"- {q}" for q in story.requirements), ""]
+    if story.menus:
+        lines += ["## Меню", "", *(f"- `{m}`" for m in story.menus), ""]
     if story.notes:
         lines += ["## Примечания", "", story.notes, ""]
+    if story.dev_notes:
+        lines += ["## Для разработчика", "", story.dev_notes, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_guide_md(root: Path, composed: list[ComposedStory], solution: str | None) -> str:
-    """User guide of a solution: one section per composed story."""
+def _dev_guide_md(root: Path, composed: list[ComposedStory], solution: str | None) -> list[str]:
     mods, _ = modules(root)
     title = "Руководство пользователя" + (f": {solution}" if solution else "")
     lines = [f"# {title}", ""]
@@ -610,7 +719,89 @@ def render_guide_md(root: Path, composed: list[ComposedStory], solution: str | N
         lines += _story_body_md(root, mods, c, "###")
         for note in c.notes:
             lines += [note, ""]
+        for note in c.dev_notes:
+            lines += [f"**Для разработчика.** {note}", ""]
         lines += ["Модули: " + ", ".join(f"`{m}`" for m in c.modules), ""]
+        if c.section:
+            lines += [f"Раздел: {_placement(c.section, c.order)}", ""]
+        if c.menus:
+            lines += ["Меню: " + ", ".join(f"`{m}`" for m in c.menus), ""]
+    return lines
+
+
+def guide_sections(composed: list[ComposedStory]) -> list[tuple[str, list[ComposedStory]]]:
+    """Chapters of the user guide: sections by the minimal ``order`` of their
+    stories, then name; «Прочее» (stories without a section) last; stories
+    within a chapter by order, then title."""
+    groups: dict[str, list[ComposedStory]] = {}
+    for c in composed:
+        groups.setdefault(c.section.strip() or OTHER_SECTION, []).append(c)
+    names = sorted(
+        groups, key=lambda s: (s == OTHER_SECTION, min(c.order for c in groups[s]), s)
+    )
+    return [
+        (name, sorted(groups[name], key=lambda c: (c.order, c.title, c.module, c.ident)))
+        for name in names
+    ]
+
+
+def _cap(text: str) -> str:
+    text = text.strip()
+    return text[:1].upper() + text[1:]
+
+
+def _uncap(text: str) -> str:
+    """Lower the first letter of a clause unless it starts an abbreviation (СНИЛС, Т-1)."""
+    text = text.strip().rstrip(".").strip()
+    return text[:1].lower() + text[1:] if text[1:2].islower() else text
+
+
+def _end(text: str) -> str:
+    return text if text.endswith((".", "!", "?", "…")) else text + "."
+
+
+def user_lead(c: ComposedStory) -> str:
+    """«Кадровик: принять человека на работу, чтобы работник был виден в списке.»"""
+    return _end(f"{_cap(c.role)}: {c.goal.strip().rstrip('.')}, чтобы {c.benefit.strip()}")
+
+
+def user_rule(sc: Scenario) -> str:
+    """A scenario as a plain rule: «**Заголовок.** Если <given> и <when>, то <then>.»"""
+    label = (sc.title or sc.ident).strip().rstrip(".")
+    return _end(f"**{label}.** Если {_uncap(sc.given)} и {_uncap(sc.when)}, то {_uncap(sc.then)}")
+
+
+def _quote(prefix: str, text: str) -> list[str]:
+    first, *rest = text.strip().splitlines() or [""]
+    return [f"> {prefix} {first}".rstrip(), *(f"> {line}".rstrip() for line in rest)]
+
+
+def _user_guide_md(composed: list[ComposedStory]) -> list[str]:
+    lines = ["# Руководство пользователя", ""]
+    for section, stories in guide_sections(composed):
+        lines += [f"## {section}", ""]
+        for c in stories:
+            lines += [f"### {c.title}", ""]
+            if c.role or c.goal or c.benefit:
+                lines += [user_lead(c), ""]
+            if c.steps:
+                lines += ["#### Как сделать", "", *_steps_md(c.steps), ""]
+            if c.scenarios:
+                lines += ["#### Как это работает", "", *(f"- {user_rule(sc)}" for sc in c.scenarios), ""]
+            for note in c.notes:
+                lines += [*_quote("**Важно.**", note), ""]
+    return lines
+
+
+def render_guide_md(
+    root: Path, composed: list[ComposedStory], solution: str | None, audience: str = "dev"
+) -> str:
+    """Guide of a solution. ``dev``: one section per composed story, in module
+    dependency order, with tests, modules, menus and technical notes. ``user``:
+    the end-user guide, chapters by section (:func:`guide_sections`)."""
+    if audience not in AUDIENCES:
+        raise ValueError(f"unknown audience {audience!r}")
+    lines = _user_guide_md(composed) if audience == "user" else _dev_guide_md(root, composed, solution)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -619,7 +810,10 @@ def _ref_dict(r: Ref) -> dict:
 
 
 def _scenario_dict(sc: Scenario) -> dict:
-    return {"ident": sc.ident, "given": sc.given, "when": sc.when, "then": sc.then, "tests": list(sc.tests)}
+    return {
+        "ident": sc.ident, "title": sc.title,
+        "given": sc.given, "when": sc.when, "then": sc.then, "tests": list(sc.tests),
+    }
 
 
 def _step_dict(st: Step) -> dict:
@@ -644,6 +838,10 @@ def story_to_dict(loc: Located, story: Story) -> dict:
         "steps": [_step_dict(st) for st in story.steps],
         "steps_after": {k: [_step_dict(st) for st in v] for k, v in story.steps_after.items()},
         "notes": story.notes,
+        "section": story.section,
+        "order": story.order,
+        "menus": list(story.menus),
+        "dev_notes": story.dev_notes,
     }
 
 
@@ -652,22 +850,58 @@ def render_story_json(loc: Located, story: Story) -> str:
 
 
 def composed_to_dict(c: ComposedStory) -> dict:
+    """Developer view of a composed story (``--audience dev --format json``)."""
     return {
+        "key": c.key,
         "module": c.module,
         "ident": c.ident,
+        "section": c.section,
+        "order": c.order,
         "title": c.title,
         "role": c.role,
         "goal": c.goal,
         "benefit": c.benefit,
+        "menus": list(c.menus),
         "steps": [_step_dict(st) for st in c.steps],
         "scenarios": [_scenario_dict(sc) for sc in c.scenarios],
         "modules": list(c.modules),
         "implements": [_ref_dict(r) for r in c.implements],
         "requirements": list(c.requirements),
         "notes": list(c.notes),
+        "dev_notes": list(c.dev_notes),
     }
 
 
-def render_guide_json(composed: list[ComposedStory], solution: str | None) -> str:
-    data = {"solution": solution, "stories": [composed_to_dict(c) for c in composed]}
+def user_story_dict(c: ComposedStory) -> dict:
+    """End-user view of a composed story (``--audience user --format json``): the
+    record an in-app help center loads. No tests, refs or technical notes."""
+    return {
+        "key": c.key,
+        "section": c.section,
+        "order": c.order,
+        "title": c.title,
+        "role": c.role,
+        "goal": c.goal,
+        "benefit": c.benefit,
+        "menus": list(c.menus),
+        "steps": [_step_dict(st) for st in c.steps],
+        "scenarios": [
+            {"ident": sc.ident, "title": sc.title, "given": sc.given, "when": sc.when, "then": sc.then}
+            for sc in c.scenarios
+        ],
+        "notes": list(c.notes),
+        "modules": list(c.modules),
+    }
+
+
+def render_guide_json(composed: list[ComposedStory], solution: str | None, audience: str = "dev") -> str:
+    """Guide JSON: ``{"format", "audience", "solution", "stories": [...]}``; user
+    stories come in guide order (chapters), dev stories in dependency order."""
+    if audience not in AUDIENCES:
+        raise ValueError(f"unknown audience {audience!r}")
+    if audience == "user":
+        stories = [user_story_dict(c) for _, group in guide_sections(composed) for c in group]
+    else:
+        stories = [composed_to_dict(c) for c in composed]
+    data = {"format": GUIDE_FORMAT, "audience": audience, "solution": solution, "stories": stories}
     return json.dumps(data, ensure_ascii=False, indent=2)

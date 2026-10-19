@@ -45,6 +45,72 @@ new `scenarios`, `replaces={"S1": scenario("S1", ...)}`,
   solution: stories of its `depends` closure with extensions applied in
   dependency order. `docs list|status|render --module` include stories.
 
+### Guide fields (all optional)
+
+```python
+STORY = story(
+    module="hrm_core", title="Приём работника", role="кадровик", goal="…", benefit="…",
+    section="Работники", order=10,                     # guide chapter / place in it
+    menus=("hrm_core.menu_hrm_employees_list",),       # menu items the story belongs to
+    notes="Приём — только с даты.",                     # user-facing «Важно»
+    dev_notes="Мастер — hrm.employee.wizard.",         # developer guide only
+    scenarios=(scenario("S1", "…", "…", "…", title="Приём с будущей даты"),),
+)
+```
+
+- `section` / `order` (default 100) — base story only; an extension inherits them.
+- `menus` — fully qualified xml ids `<module>.<menu id>`; an extension may add
+  menus (merged after the base ones). `docs check`: menus need a `section`
+  (in the base story); the module part must be the story module or in its
+  `depends` closure; the id must be a `<menuitem id>` (nested ones too) or a
+  `<record model="ir.ui.menu" id>` in that module's `*.xml` (id with or without
+  the module prefix).
+- `notes` / `dev_notes` — extensions append theirs.
+- `scenario(..., title=…)` — short caption shown in the user guide instead of the ident.
+
+### Audiences
+
+`pydacc docs render --solution M [--audience dev|user] [--format md|json]`
+(`--audience` only with `--solution`; default `dev`).
+
+- `dev` — stories in module dependency order with scenarios (Дано/Когда/Тогда,
+  tests), modules, section, menus, technical notes.
+- `user` — end-user guide: `# Руководство пользователя`, a `##` chapter per
+  section (sections by the minimal `order` of their stories, then name;
+  stories without a section in the last chapter «Прочее»), a `###` story per
+  story (by `order`, then title): «Роль: цель, чтобы польза.», `#### Как сделать`
+  (numbered steps, screenshots), `#### Как это работает` (one rule per scenario:
+  «**Заголовок.** Если <дано> и <когда>, то <тогда>.»), `> **Важно.** <notes>`.
+  No tests, refs, modules or `dev_notes`.
+
+### Guide JSON (for an in-app help center)
+
+`--format json` prints one object; `format` is bumped on incompatible changes.
+
+```text
+{
+  "format": 1, "audience": "user" | "dev", "solution": "<module>",
+  "stories": [{
+    "key": "<module>::story/NNNN",        # stable id: base story module + number
+    "section": str,                       # "" = no section (md: «Прочее»)
+    "order": int,
+    "title": str, "role": str, "goal": str, "benefit": str,
+    "menus": [str],                       # "<module>.<menu xml id>", base then extensions
+    "steps": [{"text": str, "screenshot": str}],   # screenshot: path from the project
+                                                   # root ("" = none); for Odoo the URL is
+                                                   # /<module>/<path inside the module>
+    "scenarios": [{"ident": str, "title": str, "given": str, "when": str, "then": str}],
+    "notes": [str],                       # base first, then extensions
+    "modules": [str]                      # base module, then extensions applied
+  }]
+}
+```
+
+`user` stories come in guide order (chapters, then order within them). `dev`
+stories come in module dependency order and additionally carry `module`,
+`ident`, `implements` (`[{module, kind, ident}]`), `requirements`, `dev_notes`
+(`[str]`) and `tests` in every scenario.
+
 ## Not done yet (next slices)
 
 - Runtime Odoo-registry introspection (the authoritative gate catalog).

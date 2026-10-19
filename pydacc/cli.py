@@ -18,6 +18,7 @@ from .docs import (
     freshness,
     graph_report,
     loaded_docs,
+    loaded_stories,
     render_json,
     render_md,
     status_report,
@@ -25,6 +26,7 @@ from .docs import (
     warnings,
 )
 from .gate import Check, has_staged, index_snapshot, run
+from .stories import compose, render_guide_json, render_guide_md, render_story_json, render_story_md
 from .hash import content_hash, index_hash
 from .journal import SELF_COMMIT, append, parse, render, utc_now
 
@@ -206,17 +208,40 @@ def _cmd_docs_graph(module: str | None) -> int:
 
 def _cmd_docs_render(module: str | None, fmt: str) -> int:
     docs, sb, _ = loaded_docs(_root())
-    keys = sorted(docs)
+    stories, _ = loaded_stories(_root())
+    keys = sorted([*docs, *stories])
     if module is not None:
         keys = [k for k in keys if k[0] == module]
     if not keys:
         print("docs render: no docs found", file=sys.stderr)
         return 2
     for key in keys:
+        if key in stories:
+            loc, story = stories[key]
+            print(f"# {loc.rel}", file=sys.stderr)
+            print(render_story_json(loc, story) if fmt == "json" else render_story_md(_root(), loc, story))
+            continue
         loc, doc = docs[key]
         eff = effective_status(doc, key in sb)
         print(f"# {loc.rel}", file=sys.stderr)
         print(render_json(loc, doc, eff) if fmt == "json" else render_md(loc, doc, eff))
+    return 0
+
+
+def _cmd_docs_guide(solution: str, fmt: str) -> int:
+    """User guide of a solution: stories of its depends closure, superposed."""
+    try:
+        composed = compose(_root(), solution)
+    except ValueError as exc:
+        print(f"docs render: {exc}", file=sys.stderr)
+        return 2
+    if not composed:
+        print(f"docs render: no stories for solution {solution!r}", file=sys.stderr)
+        return 2
+    if fmt == "json":
+        print(render_guide_json(composed, solution))
+    else:
+        print(render_guide_md(_root(), composed, solution), end="")
     return 0
 
 
@@ -246,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     refs_p.add_argument("term")
     sub.add_parser("deadfields", help="dead-field candidates (defined but never referenced)")
 
-    docs_p = sub.add_parser("docs", help="manage RFC/plan/user docs as code")
+    docs_p = sub.add_parser("docs", help="manage RFC/plan/user docs and stories as code")
     docs_sub = docs_p.add_subparsers(dest="docs_command", required=True)
     docs_sub.add_parser("list", help="list discovered doc modules")
     docs_sub.add_parser("validate", help="check schema + refs + supersedes graph")
@@ -255,7 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     graph_p = docs_sub.add_parser("graph", help="supersedes chain (было → стало)")
     graph_p.add_argument("--module", help="only this module")
     render_p = docs_sub.add_parser("render", help="render docs to md/json")
-    render_p.add_argument("--module", help="render only this module")
+    render_target = render_p.add_mutually_exclusive_group()
+    render_target.add_argument("--module", help="render only this module")
+    render_target.add_argument(
+        "--solution", help="user guide of this solution: stories of its depends closure, superposed"
+    )
     render_p.add_argument("--format", choices=("md", "json"), default="md")
 
     args = parser.parse_args(argv)
@@ -292,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.docs_command == "graph":
             return _cmd_docs_graph(args.module)
         if args.docs_command == "render":
+            if args.solution is not None:
+                return _cmd_docs_guide(args.solution, args.format)
             return _cmd_docs_render(args.module, args.format)
     return 2
 

@@ -1,4 +1,4 @@
-"""Typed documentation content: RFC/plan/user-doc are code, not markdown.
+"""Typed documentation content: RFC/plan/user-doc/story are code, not markdown.
 
 The registry (``pydacc docs``) imports these modules and renders md/json/xml.
 Content is typed data (dataclasses); forms are derived views of one source.
@@ -7,11 +7,17 @@ One decision kind — RFC. A module holds a contract ``__rfc__.py`` plus
 numbered decisions ``rfc/NNNN.py``; business planning lives in ``plan/NNNN.py``
 (same mechanics: statuses, supersedes, registry). Two status axes: document
 lifecycle and implementation-in-code.
+
+User stories live in ``stories/NNNN.py`` (:class:`Story`): «как <роль> я хочу
+<цель>, чтобы <польза>» plus scenarios bound to tests and illustrated steps. A
+story in a dependent module may extend a story of its dependency (superposition):
+add scenarios, replace them, insert steps; the registry composes the user guide
+of a solution from the stories of the modules it installs.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -58,7 +64,7 @@ class Section:
 @dataclass(frozen=True)
 class Ref:
     module: str   # target module name, e.g. "payroll_core"
-    kind: str     # "rfc" | "plan"
+    kind: str     # "rfc" | "plan" | "story"
     ident: str    # decision number ("0001") or "" for the module contract
 
 
@@ -236,4 +242,123 @@ def user_doc(
         status=Status.ACCEPTED,
         summary=summary,
         sections=tuple(sections),
+    )
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """Сценарий истории: Дано / Когда / Тогда, подтверждённый тестами.
+
+    tests — dotted ids ``<module>.tests.<test_file>[.<Class>[.<method>]]``;
+    `pydacc docs check` resolves each to a file, class and method.
+    """
+
+    ident: str                      # "S1"; unique within the composed story
+    given: str
+    when: str
+    then: str
+    tests: tuple[str, ...] = ()
+
+
+def scenario(
+    ident: str,
+    given: str,
+    when: str,
+    then: str,
+    tests: tuple[str, ...] | list[str] = (),
+) -> Scenario:
+    return Scenario(ident=ident, given=given, when=when, then=then, tests=tuple(tests))
+
+
+@dataclass(frozen=True)
+class Step:
+    """Шаг пользователя; screenshot — путь относительно каталога модуля."""
+
+    text: str
+    screenshot: str = ""
+
+
+def step(text: str, screenshot: str = "") -> Step:
+    return Step(text=text, screenshot=screenshot)
+
+
+StepLike = Step | str
+
+
+def _steps(items: tuple[StepLike, ...] | list[StepLike]) -> tuple[Step, ...]:
+    """Plain strings are steps without a screenshot."""
+    out: list[Step] = []
+    for item in items:
+        if isinstance(item, Step):
+            out.append(item)
+        elif isinstance(item, str):
+            out.append(Step(text=item))
+        else:
+            raise TypeError(f"step must be str or Step, got {type(item).__name__}")
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class Story:
+    """Пользовательская история модуля (``stories/NNNN.py``).
+
+    Base story (``extends is None``): «Как <role> я хочу <goal>, чтобы <benefit>»,
+    scenarios and steps. Extension (``extends`` = ref to a story of a dependency):
+    ``scenarios`` are added, ``replaces`` swaps base scenarios by ident,
+    ``steps_after`` inserts steps after a base step (exact text), ``steps`` are
+    appended. role/goal/benefit always come from the base story.
+    """
+
+    module: str
+    title: str
+    role: str = ""
+    goal: str = ""
+    benefit: str = ""
+    implements: tuple[Ref, ...] = ()        # rfc/plan docs this story realises
+    requirements: tuple[str, ...] = ()      # requirement idents from those docs
+    scenarios: tuple[Scenario, ...] = ()
+    steps: tuple[Step, ...] = ()
+    extends: Ref | None = None
+    replaces: dict[str, Scenario] = field(default_factory=dict, hash=False)
+    steps_after: dict[str, tuple[Step, ...]] = field(default_factory=dict, hash=False)
+    notes: str = ""
+    ident: str = ""                         # filled by the registry from the file name
+    kind: str = "story"
+
+
+def story(
+    module: str,
+    title: str,
+    role: str = "",
+    goal: str = "",
+    benefit: str = "",
+    implements: tuple[Ref, ...] | list[Ref] = (),
+    requirements: tuple[str, ...] | list[str] = (),
+    scenarios: tuple[Scenario, ...] | list[Scenario] = (),
+    steps: tuple[StepLike, ...] | list[StepLike] = (),
+    extends: Ref | None = None,
+    replaces: dict[str, Scenario] | None = None,
+    steps_after: dict[str, tuple[StepLike, ...] | list[StepLike]] | None = None,
+    notes: str = "",
+) -> Story:
+    """User story (``stories/NNNN.py``); an extension sets ``extends``."""
+    if extends is not None and not isinstance(extends, Ref):
+        raise TypeError("extends must be ref(module, 'story', 'NNNN')")
+    return Story(
+        module=module,
+        title=title,
+        role=role,
+        goal=goal,
+        benefit=benefit,
+        implements=tuple(implements),
+        requirements=tuple(requirements),
+        scenarios=tuple(scenarios),
+        steps=_steps(steps),
+        extends=extends,
+        replaces=dict(replaces or {}),
+        steps_after={
+            anchor: _steps((v,) if isinstance(v, (str, Step)) else v)
+            for anchor, v in (steps_after or {}).items()
+        },
+        notes=notes,
     )

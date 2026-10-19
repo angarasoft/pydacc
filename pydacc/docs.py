@@ -1,4 +1,4 @@
-"""Docs registry: discover, import, render and validate RFC/plan/user docs.
+"""Docs registry: discover, import, render and validate RFC/plan/user docs and stories.
 
 Docs are Python modules (content = typed code, see :mod:`pydacc.spec`) imported
 by this registry and rendered to md/json. One source, many forms — the
@@ -6,6 +6,8 @@ by this registry and rendered to md/json. One source, many forms — the
 
 One decision kind — RFC: a module contract ``__rfc__.py`` plus numbered
 decisions ``rfc/NNNN.py``; business planning lives in ``plan/NNNN.py``.
+User stories ``stories/NNNN.py`` are loaded here; their checks, composition
+across modules and rendering live in :mod:`pydacc.stories`.
 """
 
 from __future__ import annotations
@@ -15,16 +17,17 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .spec import PRIORITIES, Doc, RFC_SECTIONS, Ref, Status
+from .spec import PRIORITIES, Doc, RFC_SECTIONS, Ref, Status, Story
 
 RFC_FILENAME = "__rfc__.py"  # module contract (root, pairs with __manifest__.py)
 RFC_DIRNAME = "rfc"          # numbered decisions rfc/NNNN.py (not imported by Odoo)
 PLAN_DIRNAME = "plan"        # business planning plan/NNNN.py
+STORY_DIRNAME = "stories"    # user stories stories/NNNN.py
 USER_DOC_DIRNAME = "docs"
 USER_DOC_FILENAME = "user.py"
 USER_DOC_MD = "user.md"
 
-KINDS = ("rfc", "plan", "user")
+KINDS = ("rfc", "plan", "user", "story")
 
 Key = tuple[str, str, str]  # (module, kind, ident); contracts/user use ident == ''
 
@@ -32,10 +35,10 @@ Key = tuple[str, str, str]  # (module, kind, ident); contracts/user use ident ==
 @dataclass(frozen=True)
 class Located:
     path: Path   # absolute path to the .py doc module
-    kind: str    # 'rfc' | 'plan' | 'user'
+    kind: str    # 'rfc' | 'plan' | 'user' | 'story'
     layer: str   # 'base' | 'country' | 'solution'
     module: str  # module dir name, e.g. 'payroll_core'
-    ident: str   # decision number ('0001') or ''
+    ident: str   # decision/story number ('0001') or ''
     rel: str     # path relative to the scan root
 
 
@@ -58,7 +61,7 @@ def discover(root: Path) -> list[Located]:
                 located.append(
                     Located(contract, "rfc", layer, module, "", str(contract.relative_to(root)))
                 )
-            for dirname, kind in ((RFC_DIRNAME, "rfc"), (PLAN_DIRNAME, "plan")):
+            for dirname, kind in ((RFC_DIRNAME, "rfc"), (PLAN_DIRNAME, "plan"), (STORY_DIRNAME, "story")):
                 dec_dir = mod_dir / dirname
                 if dec_dir.is_dir():
                     for dec_file in sorted(dec_dir.glob("*.py")):
@@ -80,19 +83,21 @@ def _synthetic_name(loc: Located) -> str:
     return f"angaralink_doc_{loc.layer}_{loc.module}_{loc.kind}_{loc.ident or 'main'}"
 
 
-def load(root: Path, loc: Located) -> Doc:
-    """Import a doc module by path under a synthetic name and return its Doc."""
+def load(root: Path, loc: Located) -> Doc | Story:
+    """Import a doc module by path under a synthetic name and return its Doc
+    (or its Story for ``stories/NNNN.py``)."""
     name = _synthetic_name(loc)
     spec = importlib.util.spec_from_file_location(name, loc.path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {loc.rel}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    docs = [v for v in vars(module).values() if isinstance(v, Doc)]
+    expected = Story if loc.kind == "story" else Doc
+    docs = [v for v in vars(module).values() if isinstance(v, expected)]
     if len(docs) != 1:
-        raise ValueError(f"{loc.rel}: expected exactly one Doc, found {len(docs)}")
+        raise ValueError(f"{loc.rel}: expected exactly one {expected.__name__}, found {len(docs)}")
     doc = docs[0]
-    if loc.kind in ("rfc", "plan"):
+    if loc.kind in ("rfc", "plan", "story"):
         # ident is the file name (single source), never duplicated in content.
         doc = replace(doc, ident=loc.ident)
     return doc
@@ -102,11 +107,17 @@ def _index(located: list[Located]) -> dict[Key, Located]:
     return {(l.module, l.kind, l.ident): l for l in located}
 
 
-def _load_all(root: Path) -> tuple[list[Located], dict[Key, Located], dict[Key, tuple[Located, Doc]], list[str]]:
-    """Load every doc, collecting import problems (never raising)."""
+Stories = dict[Key, tuple[Located, Story]]
+
+
+def _load_all(
+    root: Path,
+) -> tuple[list[Located], dict[Key, Located], dict[Key, tuple[Located, Doc]], Stories, list[str]]:
+    """Load every doc and story, collecting import problems (never raising)."""
     located = discover(root)
     index = _index(located)
     docs: dict[Key, tuple[Located, Doc]] = {}
+    stories: Stories = {}
     problems: list[str] = []
     for loc in located:
         try:
@@ -114,8 +125,12 @@ def _load_all(root: Path) -> tuple[list[Located], dict[Key, Located], dict[Key, 
         except Exception as exc:  # noqa: BLE001 — report, don't crash
             problems.append(f"{loc.rel}: {exc}")
             continue
-        docs[(loc.module, loc.kind, loc.ident)] = (loc, doc)
-    return located, index, docs, problems
+        key = (loc.module, loc.kind, loc.ident)
+        if isinstance(doc, Story):
+            stories[key] = (loc, doc)
+        else:
+            docs[key] = (loc, doc)
+    return located, index, docs, stories, problems
 
 
 def _key_of(ref: Ref) -> Key:
@@ -137,9 +152,15 @@ def _superseded_by(docs: dict[Key, tuple[Located, Doc]]) -> dict[Key, list[Key]]
 
 
 def loaded_docs(root: Path) -> tuple[dict[Key, tuple[Located, Doc]], dict[Key, list[Key]], list[str]]:
-    """(docs, superseded_by, load_problems) for CLI/API consumers."""
-    _, _, docs, problems = _load_all(root)
+    """(docs, superseded_by, load_problems) for CLI/API consumers; no stories."""
+    _, _, docs, _, problems = _load_all(root)
     return docs, _superseded_by(docs), problems
+
+
+def loaded_stories(root: Path) -> tuple[Stories, list[str]]:
+    """(stories, load_problems): every ``stories/NNNN.py`` keyed (module, 'story', ident)."""
+    _, _, _, stories, problems = _load_all(root)
+    return stories, problems
 
 
 def effective_status(doc: Doc, superseded: bool) -> Status:
@@ -270,9 +291,12 @@ def validate(root: Path) -> list[str]:
 
     Enforces: every reference/supersedes target exists, the supersedes graph is
     acyclic, CANCELLED docs do not supersede anything, and rfc/plan docs carry
-    every required section (RFC_SECTIONS).
+    every required section (RFC_SECTIONS). Stories: see
+    :func:`pydacc.stories.story_problems`.
     """
-    located, index, docs, problems = _load_all(root)
+    from .stories import story_problems  # stories builds on this registry
+
+    located, index, docs, stories, problems = _load_all(root)
     for loc in located:
         doc = docs.get((loc.module, loc.kind, loc.ident))
         if doc is None:
@@ -297,6 +321,8 @@ def validate(root: Path) -> list[str]:
     if cycle:
         chain = " -> ".join(_fmt(k) for k in cycle)
         problems.append(f"supersedes cycle: {chain}")
+    if stories:
+        problems += story_problems(root, docs, stories)
     return problems
 
 
@@ -326,7 +352,7 @@ def _requirement_problems(rel: str, doc: Doc, index) -> list[str]:
 
 def warnings(root: Path) -> list[str]:
     """Soft warnings (do not fail the gate): accepted docs referencing drafts."""
-    _, _, docs, _ = _load_all(root)
+    _, _, docs, _, _ = _load_all(root)
     warns: list[str] = []
     for key, (loc, doc) in docs.items():
         if doc.status is not Status.ACCEPTED:
@@ -339,11 +365,17 @@ def warnings(root: Path) -> list[str]:
 
 
 def status_report(root: Path) -> str:
-    """One table: what is actually current, per doc, with both status axes."""
-    located, _, docs, problems = _load_all(root)
+    """One table: what is actually current, per doc, with both status axes.
+
+    Stories have no status axes: their row says ``story``.
+    """
+    located, _, docs, stories, problems = _load_all(root)
     sb = _superseded_by(docs)
     rows = [f"{'doc':<36} {'declared':<11} {'effective':<11} {'impl':<12} title"]
-    for key in sorted(docs):
+    for key in sorted([*docs, *stories]):
+        if key in stories:
+            rows.append(f"{_fmt(key):<36} {'story':<11} {'':<11} {'':<12} {stories[key][1].title}")
+            continue
         loc, doc = docs[key]
         eff = effective_status(doc, key in sb)
         impl = doc.implementation.value if doc.implementation is not None else ""
@@ -356,7 +388,7 @@ def status_report(root: Path) -> str:
 
 def graph_report(root: Path, module: str | None) -> str:
     """Show the supersedes chain per module (было → стало)."""
-    _, _, docs, _ = _load_all(root)
+    _, _, docs, _, _ = _load_all(root)
     sb = _superseded_by(docs)
     lines: list[str] = []
     for key in sorted(docs):
@@ -376,7 +408,7 @@ def freshness(root: Path) -> list[str]:
 
     Only user docs are committed as .md; rfc/plan render on demand.
     """
-    located, _, docs, _ = _load_all(root)
+    located, _, docs, _, _ = _load_all(root)
     sb = _superseded_by(docs)
     stale: list[str] = []
     for loc in located:

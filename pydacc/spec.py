@@ -252,7 +252,9 @@ class Scenario:
     tests — dotted ids ``<module>.tests.<test_file>[.<Class>[.<method>]]``;
     `pydacc docs check` resolves each to a file, class and method.
     title — short user-facing caption («Приём с будущей даты»); the user
-    guide shows it instead of the ident.
+    guide shows it instead of the ident. text — the same rule written for the
+    user by hand (one or two sentences); the user guide shows it instead of
+    Дано/Когда/Тогда, which stay for acceptance and tests.
     """
 
     ident: str                      # "S1"; unique within the composed story
@@ -261,6 +263,7 @@ class Scenario:
     then: str
     tests: tuple[str, ...] = ()
     title: str = ""
+    text: str = ""
 
 
 def scenario(
@@ -270,8 +273,9 @@ def scenario(
     then: str,
     tests: tuple[str, ...] | list[str] = (),
     title: str = "",
+    text: str = "",
 ) -> Scenario:
-    return Scenario(ident=ident, given=given, when=when, then=then, tests=tuple(tests), title=title)
+    return Scenario(ident=ident, given=given, when=when, then=then, tests=tuple(tests), title=title, text=text)
 
 
 @dataclass(frozen=True)
@@ -320,7 +324,9 @@ class Story:
     qualified xml ids of the menu items the story belongs to (in-app help shows
     it to users who see one of them); an extension may add menus. ``notes`` is
     the user-facing «Важно» note, ``dev_notes`` technical details rendered only
-    for developers; extensions append both.
+    for developers; extensions append both. ``intro`` is the hand-written lead
+    paragraph of the user guide (base only); a story in the guide (with a
+    section) needs it, and its scenarios need ``title`` and ``text``.
     """
 
     module: str
@@ -340,6 +346,7 @@ class Story:
     order: int = DEFAULT_STORY_ORDER        # place within the section; base only
     menus: tuple[str, ...] = ()             # "<module>.<menu xml id>"
     dev_notes: str = ""                     # technical details, developer guide only
+    intro: str = ""                         # user guide lead paragraph; base only
     ident: str = ""                         # filled by the registry from the file name
     kind: str = "story"
 
@@ -362,6 +369,7 @@ def story(
     order: int = DEFAULT_STORY_ORDER,
     menus: tuple[str, ...] | list[str] = (),
     dev_notes: str = "",
+    intro: str = "",
 ) -> Story:
     """User story (``stories/NNNN.py``); an extension sets ``extends``."""
     if extends is not None and not isinstance(extends, Ref):
@@ -391,4 +399,5 @@ def story(
         order=order,
         menus=tuple(menus),
         dev_notes=dev_notes,
+        intro=intro,
     )

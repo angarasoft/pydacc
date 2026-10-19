@@ -72,7 +72,31 @@ def _guide_tree() -> Path:
     _story(root / CORE, "0003", ' title="Увольнение",' + _base_story(' section="Работники", order=10,'))
     _story(root / CORE, "0004", ' title="Больничный",' + _base_story(' section="Неявки", order=10,'))
     _story(root / CORE, "0005", ' title="Разное",' + _base_story(' order=1,'))  # still last
+    for path in root.glob("addons/*/*/stories/*.py"):
+        _with_guide_texts(path)
     return root
+
+
+GUIDE_TEXTS_HEADER = (
+    "from pydacc.spec import scenario as _scenario\n"
+    "def scenario(*args, **kwargs):\n"
+    "    kwargs.setdefault('title', 'Кратко')\n"
+    "    kwargs.setdefault('text', 'Пояснение для пользователя.')\n"
+    "    return _scenario(*args, **kwargs)\n"
+)
+
+
+def _with_guide_texts(path: Path) -> None:
+    """A story in the guide needs hand-written intro and scenario title/text:
+    fill them where a fixture story has none (explicit values win)."""
+    text = path.read_text()
+    lines = text.splitlines(keepends=True)
+    last_import = max((i for i, line in enumerate(lines) if line.startswith(("from ", "import "))), default=-1)
+    lines.insert(last_import + 1, GUIDE_TEXTS_HEADER)
+    text = "".join(lines)
+    if "intro=" not in text and "extends=" not in text:
+        text = text.replace("section=", 'intro="Вводный абзац.", section=', 1)
+    path.write_text(text)
 
 
 class SpecFieldsTest(unittest.TestCase):
@@ -131,6 +155,7 @@ class GuideFieldChecksTest(unittest.TestCase):
             ' section="S", menus=("hrm_core.menu_root", "hrm_core.menu_employees", "hrm_core.menu_settings",'
             ' "hrm_core.menu_nope", "hrm_core.action_not_a_menu", "hrm_core.menu_ghost",'
             ' "hrm_l10n_ru.menu_ru", "base.menu_x", "menu_root", "a.b.c", "hrm_core.menu_root"),'))
+        _with_guide_texts(root / CORE / "stories" / "0006.py")
         problems = [p for p in _problems(root).splitlines() if "0006.py" in p]
         rel = "addons/base/hrm_core/stories/0006.py"
         unparsable = " (unparsable: addons/base/hrm_core/static/src/broken.xml)"
@@ -201,7 +226,7 @@ class UserGuideTest(unittest.TestCase):
         self.assertLess(self.md.index("### Увольнение"), self.md.index("### Приём на работу"))
         self.assertIn(
             "### Приём на работу\n\n"
-            "Кадровик: оформить приём работника, чтобы он появился в штатной расстановке.\n\n"
+            "Вводный абзац.\n\n"
             "#### Как сделать\n\n"
             "1. Открыть «Сотрудники»\n"
             "2. Открыть карточку\n"
@@ -210,9 +235,9 @@ class UserGuideTest(unittest.TestCase):
             "4. Нажать «Принять»\n"
             "5. Распечатать Т-1\n\n"
             "#### Как это работает\n\n"
-            "- **Без назначения.** Если работник без назначения и кадровик принимает, то создано назначение.\n"
-            "- **S2.** Если дата приёма в прошлом и кадровик принимает, то нужен приказ Т-1.\n"
-            "- **S3.** Если нет СНИЛС и кадровик принимает, то предупреждение о СНИЛС.\n\n"
+            "- **Без назначения.** Пояснение для пользователя.\n"
+            "- **Кратко.** Пояснение для пользователя.\n"
+            "- **Кратко.** Пояснение для пользователя.\n\n"
             "> **Важно.** Приём — только с даты.\n\n"
             "> **Важно.** Форма Т-1 — по постановлению Госкомстата № 1.\n",
             self.md,
@@ -287,7 +312,7 @@ class DevGuideTest(unittest.TestCase):
         self.assertEqual(data["scenarios"][0]["title"], "Без назначения")
 
 
-USER_KEYS = {"key", "section", "order", "title", "role", "goal", "benefit", "menus", "steps", "scenarios",
+USER_KEYS = {"key", "section", "order", "title", "role", "goal", "benefit", "intro", "menus", "steps", "scenarios",
              "notes", "modules"}
 DEV_KEYS = USER_KEYS | {"module", "ident", "implements", "requirements", "dev_notes"}
 
@@ -307,7 +332,7 @@ class GuideJsonTest(unittest.TestCase):
         for s in data["stories"]:
             self.assertEqual(set(s), USER_KEYS)
             for sc in s["scenarios"]:
-                self.assertEqual(set(sc), {"ident", "title", "given", "when", "then"})
+                self.assertEqual(set(sc), {"ident", "title", "text", "given", "when", "then"})
             for st in s["steps"]:
                 self.assertEqual(set(st), {"text", "screenshot"})
         hire = data["stories"][3]
@@ -331,7 +356,7 @@ class GuideJsonTest(unittest.TestCase):
         for s in data["stories"]:
             self.assertEqual(set(s), DEV_KEYS)
             for sc in s["scenarios"]:
-                self.assertEqual(set(sc), {"ident", "title", "given", "when", "then", "tests"})
+                self.assertEqual(set(sc), {"ident", "title", "text", "given", "when", "then", "tests"})
         hire = next(s for s in data["stories"] if s["key"] == "hrm_core::story/0001")
         self.assertEqual(hire["dev_notes"], ["Мастер — hrm.employee.wizard.", "СНИЛС — поле snils."])
         self.assertEqual(hire["scenarios"][0]["tests"], ["hrm_core.tests.test_hire.TestHire.test_hire"])

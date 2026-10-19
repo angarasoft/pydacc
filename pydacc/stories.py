@@ -127,6 +127,7 @@ class ComposedStory:
     order: int = DEFAULT_STORY_ORDER
     menus: tuple[str, ...] = ()        # base menus, then the ones extensions add
     dev_notes: tuple[str, ...] = ()    # developer guide only
+    intro: str = ""                    # hand-written user lead (base story)
 
     @property
     def key(self) -> str:
@@ -221,7 +222,7 @@ def _finish(draft: _Draft) -> ComposedStory:
         modules=tuple(draft.modules), implements=tuple(draft.implements),
         requirements=tuple(draft.requirements), notes=tuple(draft.notes),
         section=base.section, order=base.order,
-        menus=tuple(draft.menus), dev_notes=tuple(draft.dev_notes),
+        menus=tuple(draft.menus), dev_notes=tuple(draft.dev_notes), intro=base.intro,
     )
 
 
@@ -414,11 +415,28 @@ def _content_problems(story: Story) -> list[str]:
             problems.append("replaces/steps_after need extends")
         if story.menus and not story.section.strip():
             problems.append("menus need 'section' (the guide chapter)")
+        if story.section.strip():
+            problems += _guide_text_problems(story)
     else:
         if story.role or story.goal or story.benefit:
             problems.append("extension must not set role/goal/benefit (taken from the base story)")
         if story.section or story.order != DEFAULT_STORY_ORDER:
             problems.append("extension must not set section/order (taken from the base story)")
+        if story.intro:
+            problems.append("extension must not set intro (taken from the base story)")
+    return problems
+
+
+def _guide_text_problems(story: Story, scenarios_only: bool = False) -> list[str]:
+    """A story in the user guide is written for people: the lead paragraph and
+    each scenario's title and text by hand (Дано/Когда/Тогда stay for tests)."""
+    problems: list[str] = []
+    if not scenarios_only and not story.intro.strip():
+        problems.append("a story with 'section' needs 'intro' (user guide lead, written by hand)")
+    for sc in (*story.scenarios, *story.replaces.values()):
+        for name in ("title", "text"):
+            if not getattr(sc, name).strip():
+                problems.append(f"scenario {sc.ident!r}: a story in the guide needs {name!r}")
     return problems
 
 
@@ -487,6 +505,8 @@ def _superposition_problems(ctx: _Ctx, loc: Located, story: Story) -> list[str]:
             problems.append(f"steps_after {anchor!r}: no such step in composed base {label}")
     if story.menus and not base.section.strip():
         problems.append(f"menus need 'section' in the base story {label}")
+    if base.section.strip():
+        problems += _guide_text_problems(story, scenarios_only=True)
     return problems
 
 
@@ -768,6 +788,8 @@ def user_lead(c: ComposedStory) -> str:
 def user_rule(sc: Scenario) -> str:
     """A scenario as a plain rule: «**Заголовок.** Если <given> и <when>, то <then>.»"""
     label = (sc.title or sc.ident).strip().rstrip(".")
+    if sc.text.strip():
+        return f"**{label}.** {_end(sc.text.strip())}"
     return _end(f"**{label}.** Если {_uncap(sc.given)} и {_uncap(sc.when)}, то {_uncap(sc.then)}")
 
 
@@ -782,7 +804,9 @@ def _user_guide_md(composed: list[ComposedStory]) -> list[str]:
         lines += [f"## {section}", ""]
         for c in stories:
             lines += [f"### {c.title}", ""]
-            if c.role or c.goal or c.benefit:
+            if c.intro.strip():
+                lines += [c.intro.strip(), ""]
+            elif c.role or c.goal or c.benefit:
                 lines += [user_lead(c), ""]
             if c.steps:
                 lines += ["#### Как сделать", "", *_steps_md(c.steps), ""]
@@ -811,7 +835,7 @@ def _ref_dict(r: Ref) -> dict:
 
 def _scenario_dict(sc: Scenario) -> dict:
     return {
-        "ident": sc.ident, "title": sc.title,
+        "ident": sc.ident, "title": sc.title, "text": sc.text,
         "given": sc.given, "when": sc.when, "then": sc.then, "tests": list(sc.tests),
     }
 
@@ -842,6 +866,7 @@ def story_to_dict(loc: Located, story: Story) -> dict:
         "order": story.order,
         "menus": list(story.menus),
         "dev_notes": story.dev_notes,
+        "intro": story.intro,
     }
 
 
@@ -861,6 +886,7 @@ def composed_to_dict(c: ComposedStory) -> dict:
         "role": c.role,
         "goal": c.goal,
         "benefit": c.benefit,
+        "intro": c.intro,
         "menus": list(c.menus),
         "steps": [_step_dict(st) for st in c.steps],
         "scenarios": [_scenario_dict(sc) for sc in c.scenarios],
@@ -883,10 +909,12 @@ def user_story_dict(c: ComposedStory) -> dict:
         "role": c.role,
         "goal": c.goal,
         "benefit": c.benefit,
+        "intro": c.intro,
         "menus": list(c.menus),
         "steps": [_step_dict(st) for st in c.steps],
         "scenarios": [
-            {"ident": sc.ident, "title": sc.title, "given": sc.given, "when": sc.when, "then": sc.then}
+            {"ident": sc.ident, "title": sc.title, "text": sc.text,
+             "given": sc.given, "when": sc.when, "then": sc.then}
             for sc in c.scenarios
         ],
         "notes": list(c.notes),

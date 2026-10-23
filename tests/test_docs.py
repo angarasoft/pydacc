@@ -1,8 +1,12 @@
+import contextlib
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
+from pydacc.cli import main
 from pydacc.docs import (
     discover,
     freshness,
@@ -151,6 +155,52 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(data["implementation"], "implemented")
 
 
+def _cli(root: Path, *argv: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(argv))
+    finally:
+        os.chdir(cwd)
+    return code, out.getvalue(), err.getvalue()
+
+
+class RenderCliTest(unittest.TestCase):
+    def _tree(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        mod = _write_module(root, "payroll_core")
+        _sample_rfc(mod)  # contract, title "Payroll Engine"
+        _sample_decision(mod, "0001")  # title "Pick mechanism"
+        _sample_plan(mod, "0001")  # title "Business reqs"
+        return root
+
+    def test_render_single_doc_by_kind_and_ident(self):
+        code, out, _ = _cli(self._tree(), "docs", "render", "--module", "payroll_core",
+                            "--kind", "rfc", "--ident", "0001", "--format", "md")
+        self.assertEqual(code, 0)
+        self.assertIn("Pick mechanism", out)
+        self.assertNotIn("Payroll Engine", out)  # contract filtered out
+        self.assertNotIn("Business reqs", out)  # plan filtered out
+
+    def test_render_ident_without_module_rejected(self):
+        code, _, err = _cli(self._tree(), "docs", "render", "--ident", "0001")
+        self.assertEqual(code, 2)
+        self.assertIn("--kind/--ident need --module", err)
+
+    def test_render_kind_with_solution_rejected(self):
+        code, _, err = _cli(self._tree(), "docs", "render", "--solution", "x", "--kind", "rfc")
+        self.assertEqual(code, 2)
+        self.assertIn("--kind/--ident need --module", err)
+
+    def test_render_no_match_is_error(self):
+        code, _, err = _cli(self._tree(), "docs", "render", "--module", "payroll_core",
+                            "--kind", "rfc", "--ident", "9999")
+        self.assertEqual(code, 2)
+        self.assertIn("no docs found", err)
+
+
 class ValidateTest(unittest.TestCase):
     def test_valid_tree(self):
         root = Path(tempfile.mkdtemp())
@@ -183,6 +233,17 @@ class ValidateTest(unittest.TestCase):
         )
         problems = validate(root)
         self.assertTrue(any("content kind" in p for p in problems))
+
+    def test_summary_tuple_rejected(self):
+        root = Path(tempfile.mkdtemp())
+        mod = _write_module(root, "payroll_core")
+        (mod / "__rfc__.py").write_text(
+            "from pydacc.spec import rfc, Section, Status\n"
+            f'RFC = rfc(module="{mod.name}", title="bare", status=Status.DRAFT,'
+            f' summary=("part", "tuple",), {SECTIONS_PY})\n'
+        )
+        problems = validate(root)
+        self.assertTrue(any("summary is tuple" in p for p in problems))
 
     def test_missing_required_section(self):
         root = Path(tempfile.mkdtemp())

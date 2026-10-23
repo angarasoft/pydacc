@@ -207,12 +207,16 @@ def _cmd_docs_graph(module: str | None) -> int:
     return 0
 
 
-def _cmd_docs_render(module: str | None, fmt: str) -> int:
+def _cmd_docs_render(module: str | None, kind: str | None, ident: str | None, fmt: str) -> int:
     docs, sb, _ = loaded_docs(_root())
     stories, _ = loaded_stories(_root())
     keys = sorted([*docs, *stories])
     if module is not None:
         keys = [k for k in keys if k[0] == module]
+    if kind is not None:
+        keys = [k for k in keys if k[1] == kind]
+    if ident is not None:
+        keys = [k for k in keys if k[2] == ident]
     if not keys:
         print("docs render: no docs found", file=sys.stderr)
         return 2
@@ -310,6 +314,10 @@ def main(argv: list[str] | None = None) -> int:
         "--solution", help="user guide of this solution: stories of its depends closure, superposed"
     )
     render_p.add_argument("--format", choices=("md", "json"), default="md")
+    render_p.add_argument("--kind", choices=("rfc", "plan", "user", "story"), default=None,
+                          help="with --module: render only this kind of document")
+    render_p.add_argument("--ident", default=None,
+                          help="with --module: render only this document (rfc/plan/story number, or '' for the contract)")
     render_p.add_argument(
         "--audience", choices=AUDIENCES, default=None,
         help="with --solution: dev (default; tests, modules, menus) or user (end-user guide by section)",
@@ -352,11 +360,17 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_docs_help(args.check, args.module)
         if args.docs_command == "render":
             if args.solution is not None:
+                if args.kind is not None or args.ident is not None:
+                    print("docs render: --kind/--ident need --module", file=sys.stderr)
+                    return 2
                 return _cmd_docs_guide(args.solution, args.format, args.audience or "dev")
             if args.audience is not None:
                 print("docs render: --audience needs --solution", file=sys.stderr)
                 return 2
-            return _cmd_docs_render(args.module, args.format)
+            if (args.kind is not None or args.ident is not None) and args.module is None:
+                print("docs render: --kind/--ident need --module", file=sys.stderr)
+                return 2
+            return _cmd_docs_render(args.module, args.kind, args.ident, args.format)
     return 2
 
 

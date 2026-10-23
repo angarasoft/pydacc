@@ -306,6 +306,11 @@ def validate(root: Path) -> list[str]:
             problems.append(f"{loc.rel}: content kind {doc.kind!r} != file kind {loc.kind!r}")
         if doc.module != loc.module:
             problems.append(f"{loc.rel}: content module {doc.module!r} != dir {loc.module!r}")
+        if not isinstance(doc.summary, str):
+            problems.append(f"{loc.rel}: summary is {type(doc.summary).__name__}, expected str")
+        for s in doc.sections:
+            if not isinstance(s.title, str) or not isinstance(s.body, str):
+                problems.append(f"{loc.rel}: section {s.title!r}: title/body must be str")
         if doc.kind in ("rfc", "plan"):
             titles = {s.title for s in doc.sections}
             for required in RFC_SECTIONS:

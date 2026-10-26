@@ -41,8 +41,7 @@ class Implementation(Enum):
 
 
 # Required sections for rfc/plan docs, validated by `pydacc docs check`
-# (the formal RFC skeleton from the AngaraBase template, trimmed for Odoo
-# addons). Инварианты and Открытые вопросы stay structured Doc fields.
+# (the formal RFC skeleton, trimmed for Odoo addons). Инварианты and Открытые вопросы stay structured Doc fields.
 RFC_SECTIONS: tuple[str, ...] = (
     "Резюме",
     "Мотивация",

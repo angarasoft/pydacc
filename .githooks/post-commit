@@ -1,0 +1,10 @@
+#!/bin/sh
+# core.hooksPath = .githooks, поэтому git не вызывает хуки из .git/hooks.
+# Локальный post-commit машины (например, автопуш) — .git/hooks/post-commit,
+# в репозиторий не входит; нет его — ничего не делаем.
+
+hook="$(git rev-parse --git-common-dir)/hooks/post-commit"
+if [ -x "$hook" ]; then
+    exec "$hook" "$@"
+fi
+exit 0
